@@ -125,5 +125,5 @@ class SkillManageConfig:
     forgotten: ForgottenConfig = field(default_factory=ForgottenConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
-    storage_dir: str = "outputs/skill_bank"
+    storage_dir: str = "/data/hwt/skillmanage/outputs/skill_bank"
     checkpoint_interval: int = 50
