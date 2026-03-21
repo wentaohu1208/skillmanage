@@ -139,10 +139,8 @@ class MathBenchmark(Benchmark):
     ) -> Tuple[bool, float]:
         """Check agent answer against ground truth.
 
-        Uses three-level comparison:
-        1. Normalized string match
-        2. Numeric value comparison
-        3. Sympy symbolic comparison (if available)
+        Uses HuggingFace math-verify for robust LaTeX comparison.
+        Falls back to string normalization if math-verify unavailable.
 
         Args:
             task: Task with ground truth.
@@ -240,17 +238,26 @@ def _fallback_extract_answer(agent_output: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Answer comparison (three-level)
+# Answer comparison — uses HuggingFace math-verify with fallback
 # ---------------------------------------------------------------------------
+
+# Try to import math-verify (pip install math-verify[antlr4_13_2])
+_MATH_VERIFY_AVAILABLE = False
+try:
+    from math_verify import parse as mv_parse, verify as mv_verify
+    _MATH_VERIFY_AVAILABLE = True
+except ImportError:
+    logger.warning(
+        "math-verify not installed. Using basic string comparison. "
+        "Install with: pip install math-verify[antlr4_13_2]"
+    )
 
 
 def is_equiv(predicted: str, ground_truth: str) -> bool:
     """Check if predicted answer is equivalent to ground truth.
 
-    Three-level comparison:
-    1. Normalized string match
-    2. Numeric value comparison (tolerance 1e-6)
-    3. Sympy symbolic comparison (if sympy available)
+    Uses HuggingFace math-verify if available (ANTLR4 + SymPy cascade).
+    Falls back to basic string normalization otherwise.
 
     Args:
         predicted: Predicted answer string.
@@ -259,138 +266,74 @@ def is_equiv(predicted: str, ground_truth: str) -> bool:
     Returns:
         True if answers are equivalent.
     """
-    pred = normalize_answer(predicted)
-    gt = normalize_answer(ground_truth)
+    if _MATH_VERIFY_AVAILABLE:
+        return _math_verify_equiv(predicted, ground_truth)
+    return _fallback_equiv(predicted, ground_truth)
 
-    # Level 1: Direct string match
+
+def _math_verify_equiv(predicted: str, ground_truth: str) -> bool:
+    """Compare using HuggingFace math-verify."""
+    try:
+        gold = mv_parse(ground_truth)
+        answer = mv_parse(predicted)
+        return mv_verify(gold, answer)
+    except Exception as e:
+        logger.debug("math-verify failed: %s. Falling back to string comparison.", e)
+        return _fallback_equiv(predicted, ground_truth)
+
+
+def _fallback_equiv(predicted: str, ground_truth: str) -> bool:
+    """Basic fallback: normalize strings then compare.
+
+    Used when math-verify is not installed.
+    """
+    pred = _normalize_basic(predicted)
+    gt = _normalize_basic(ground_truth)
+
+    # Direct string match
     if pred == gt:
         return True
 
-    # Level 2: Numeric comparison
+    # Try numeric comparison
     try:
-        pred_val = _latex_to_number(pred)
-        gt_val = _latex_to_number(gt)
-        if pred_val is not None and gt_val is not None:
-            return abs(pred_val - gt_val) < 1e-6
-    except (ValueError, ZeroDivisionError, OverflowError):
-        pass
-
-    # Level 3: Sympy symbolic comparison
-    try:
-        return _sympy_equiv(pred, gt)
-    except Exception:
+        pred_val = float(pred)
+        gt_val = float(gt)
+        return abs(pred_val - gt_val) < 1e-6
+    except (ValueError, TypeError):
         pass
 
     return False
 
 
-def normalize_answer(answer: str) -> str:
-    """Normalize a LaTeX answer string for comparison.
-
-    Args:
-        answer: Raw answer string.
-
-    Returns:
-        Normalized answer.
-    """
+def _normalize_basic(answer: str) -> str:
+    """Basic LaTeX normalization for fallback comparison."""
     s = answer.strip()
-
-    # Remove common LaTeX wrappers
     s = s.replace("\\left", "").replace("\\right", "")
-    s = s.replace("\\!", "")
-    s = s.replace("\\,", " ")
-    s = s.replace("\\ ", " ")
+    s = s.replace("\\!", "").replace("\\,", " ").replace("\\ ", " ")
+    s = s.replace("\\dfrac", "\\frac").replace("\\tfrac", "\\frac")
 
-    # Normalize fraction commands
-    s = s.replace("\\dfrac", "\\frac")
-    s = s.replace("\\tfrac", "\\frac")
+    # Remove \text{X} -> X, \textbf{X} -> X, etc.
+    for cmd in ["\\textbf", "\\textit", "\\mathrm", "\\mathbf", "\\text"]:
+        while cmd + "{" in s:
+            start = s.find(cmd + "{")
+            brace = start + len(cmd)
+            depth, j = 0, brace
+            while j < len(s):
+                if s[j] == "{":
+                    depth += 1
+                elif s[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            if depth == 0:
+                s = s[:start] + s[brace + 1 : j] + s[j + 1 :]
+            else:
+                break
 
-    # Remove text formatting
-    for cmd in ["\\text", "\\textbf", "\\textit", "\\mathrm", "\\mathbf"]:
-        s = s.replace(cmd, "")
-
-    # Remove dollar signs and trailing punctuation
     s = s.strip("$.,;: ")
-
-    # Collapse whitespace
     s = " ".join(s.split())
-
     return s
-
-
-def _latex_to_number(latex: str) -> Optional[float]:
-    """Try to convert a LaTeX expression to a float.
-
-    Handles: integers, decimals, fractions, negative numbers.
-
-    Args:
-        latex: Normalized LaTeX string.
-
-    Returns:
-        Float value, or None if conversion fails.
-    """
-    s = latex.strip()
-
-    # Direct number
-    try:
-        return float(s)
-    except ValueError:
-        pass
-
-    # \frac{a}{b}
-    frac_match = re.match(r"\\frac\{([^}]+)\}\{([^}]+)\}", s)
-    if frac_match:
-        try:
-            num = float(frac_match.group(1))
-            den = float(frac_match.group(2))
-            return num / den
-        except (ValueError, ZeroDivisionError):
-            pass
-
-    # Simple fraction a/b
-    if "/" in s and "\\" not in s:
-        parts = s.split("/")
-        if len(parts) == 2:
-            try:
-                return float(parts[0]) / float(parts[1])
-            except (ValueError, ZeroDivisionError):
-                pass
-
-    # \sqrt{x}
-    sqrt_match = re.match(r"\\sqrt\{(\d+)\}", s)
-    if sqrt_match:
-        try:
-            return float(sqrt_match.group(1)) ** 0.5
-        except ValueError:
-            pass
-
-    return None
-
-
-def _sympy_equiv(pred: str, gt: str) -> bool:
-    """Use sympy to check symbolic equivalence.
-
-    Args:
-        pred: Normalized predicted answer.
-        gt: Normalized ground truth.
-
-    Returns:
-        True if symbolically equivalent.
-
-    Raises:
-        Exception: If sympy parsing fails.
-    """
-    from sympy.parsing.latex import parse_latex
-
-    pred_expr = parse_latex(pred)
-    gt_expr = parse_latex(gt)
-
-    diff = pred_expr - gt_expr
-    try:
-        from sympy import simplify
-        return simplify(diff) == 0
-    except Exception:
-        return pred_expr.equals(gt_expr)
 
 
 def _extract_level_number(level_str: str) -> int:

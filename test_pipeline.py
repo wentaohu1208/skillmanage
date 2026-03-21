@@ -215,3 +215,69 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+'''
+  run_task(task, current_round)
+      │
+      │  ① 检索skill
+      │     retriever.retrieve(task.instruction, skill_bank, embedding_model, cfg)
+      │     → Active中embedding cosine similarity → top-K
+      │     → 如果Active没好的匹配 → fallback搜Archive
+      │     → 返回: used_skills列表 (可能为空)
+      │
+      │  ② 拼prompt + 调LLM
+      │     skills_prompt = format_skills_for_prompt(used_skills)
+      │     prompt = bench.build_prompt(task, skills_prompt)
+      │       → "请解决以下数学问题...\n{skills}\n问题: {problem}"
+      │     agent_output = llm_client.generate(prompt, system_prompt)
+      │       → 调DeepSeek API，返回CoT文本
+      │
+      │  ③ 判断对错
+      │     success, reward = bench.check_answer(task, agent_output)
+      │       → 提取\boxed{} → 三级比较 → True/False
+      │
+      │  ④ 提取trajectory
+      │     trajectory = bench.extract_trajectory(agent_output)
+      │       → 按行切分CoT → ["step1", "step2", ...]
+      │
+      │  ⑤ 如果是Archive召回的skill → 记录召回结果
+      │     archive_mgr.record_recall_result(成功/失败)
+      │       → 成功次数够R次 → promote回Active
+      │
+      │  ⑥ 更新已用skill的meta
+      │     meta_updater.update_after_task(used_skill_ids, success, reward)
+      │       → call_count += 1, success_rate更新, avg_reward更新
+      │
+      │  ⑦ Acquisition pipeline
+      │     collector.decide(success, trajectory, used_skills)
+      │       │
+      │       ├─ 成功路径:
+      │       │    segmenter.segment(trajectory, task_type)
+      │       │    alignment.add_record(task_type, segmented)
+      │       │      → PatternBuffer更新count和confidence
+      │       │    如果有pattern满足提取条件(≥M条, confidence≥r):
+      │       │      formalizer.formalize(pattern) → 新Skill
+      │       │      skill_bank.add_to_active(新skill)
+      │       │
+      │       └─ 失败路径:
+      │            failure_learner.analyze_failure(task, trajectory)
+      │              → 匹配到已有skill → 附加warning
+      │              → 没匹配但可执行 → 创建新skill
+      │              → 不可执行 → 丢弃
+      │
+      │  ⑧ Active管理（每轮结束）
+      │     active_mgr.on_round_end()
+      │       → 算importance score
+      │       → 连续T1轮低 → 降级到Archive
+      │       → 超预算 → Merge → Distill → 强制Forget
+      │
+      │  ⑨ Archive维护
+      │     archive_mgr.tick_inactive()
+      │       → 所有Archive skill的inactive_rounds += 1
+      │       → 超过max轮 → 移到Forgotten
+      │
+      └─ 返回TaskResult
+
+
+'''
