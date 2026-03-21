@@ -293,11 +293,26 @@ def is_equiv(predicted: str, ground_truth: str) -> bool:
     return _fallback_equiv(predicted, ground_truth)
 
 
+def _pre_normalize(s: str) -> str:
+    """Light normalization before passing to math-verify.
+
+    Fixes formatting issues that math-verify can't handle,
+    e.g. '(18,-18)' -> '(18, -18)'.
+    """
+    # Normalize comma spacing
+    s = s.replace(",", ", ")
+    # Clean up double spaces from above
+    s = " ".join(s.split())
+    return s
+
+
 def _math_verify_equiv(predicted: str, ground_truth: str) -> bool:
     """Compare using HuggingFace math-verify."""
     try:
-        gold = mv_parse(ground_truth)
-        answer = mv_parse(predicted)
+        pred_norm = _pre_normalize(predicted)
+        gt_norm = _pre_normalize(ground_truth)
+        gold = mv_parse(gt_norm)
+        answer = mv_parse(pred_norm)
         return mv_verify(gold, answer)
     except Exception as e:
         logger.debug("math-verify failed: %s. Falling back to string comparison.", e)
@@ -354,6 +369,8 @@ def _normalize_basic(answer: str) -> str:
                 break
 
     s = s.strip("$.,;: ")
+    # Normalize comma spacing: "(18,-18)" == "(18, -18)"
+    s = s.replace(", ", ",").replace(",", ", ")
     s = " ".join(s.split())
     return s
 
