@@ -76,7 +76,7 @@ def main() -> None:
             api_key=API_KEY,
             model_name=MODEL,
         ),
-        checkpoint_interval=999,
+        checkpoint_interval=1,
     )
 
     # --- Step 1: Init LLM ---
