@@ -72,7 +72,14 @@ class CollectionDecider:
         if rate > 0.5:
             # Partially covered -> collect uncovered segments
             uncovered = coverage.get("uncovered_steps", [])
-            uncovered_text = [trajectory[i] for i in uncovered if i < len(trajectory)]
+            # LLM may return string indices, ensure int
+            uncovered_int = []
+            for idx in uncovered:
+                try:
+                    uncovered_int.append(int(idx))
+                except (ValueError, TypeError):
+                    continue
+            uncovered_text = [trajectory[i] for i in uncovered_int if i < len(trajectory)]
             logger.debug(
                 "Partial coverage (%.1f%%) -> collect %d uncovered steps",
                 rate * 100, len(uncovered_text),
