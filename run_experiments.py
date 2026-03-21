@@ -39,10 +39,10 @@ MODEL = os.environ.get("MODEL", "deepseek-chat")
 MATH_DATA_PATH = os.environ.get("MATH_DATA_PATH", "/data/hwt/hf_data/math")
 
 SUBJECTS = ["algebra", "prealgebra", "number_theory", "geometry", "counting_and_probability"]
-LEVELS = [1, 2]
-NUM_TRAIN = 30
-NUM_TEST = 10
-OUTPUT_BASE = os.environ.get("OUTPUT_BASE", "/data/hwt/skillmanage/experiments")
+LEVELS = [4, 5]           # 改为难题，Level 1-2已饱和
+NUM_TRAIN = 50            # 增加到50题，30题太少
+NUM_TEST = 20             # 增加到20题
+OUTPUT_BASE = os.environ.get("OUTPUT_BASE", "/data/hwt/skillmanage/experiments_v2")
 
 
 def get_shared_components():
