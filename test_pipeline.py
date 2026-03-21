@@ -116,7 +116,10 @@ def main() -> None:
     logger.info("Step 4: Loading MATH data (subjects=%s, levels=%s)", MATH_SUBJECTS, MATH_LEVELS)
     logger.info("=" * 60)
 
-    bench = create_benchmark("math", subjects=MATH_SUBJECTS, levels=MATH_LEVELS)
+    # Use local path for dataset (no network required)
+    # Change this to "EleutherAI/hendrycks_math" if you have internet access
+    MATH_DATA_PATH = os.environ.get("MATH_DATA_PATH", "/data/hwt/hf_data/math")
+    bench = create_benchmark("math", subjects=MATH_SUBJECTS, levels=MATH_LEVELS, dataset_name=MATH_DATA_PATH)
     train_tasks = bench.load_tasks(split="train", limit=NUM_TRAIN_TASKS)
     test_tasks = bench.load_tasks(split="test", limit=NUM_TEST_TASKS)
     logger.info("Loaded: %d train tasks, %d test tasks", len(train_tasks), len(test_tasks))
