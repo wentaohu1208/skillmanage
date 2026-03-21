@@ -167,6 +167,14 @@ def main() -> None:
             logger.error("Task %d FAILED: %s", i + 1, e, exc_info=True)
             continue
 
+        # Checkpoint
+        if (i + 1) % cfg.checkpoint_interval == 0:
+            from skillmanage.core.storage import save_checkpoint
+            save_checkpoint(
+                skill_bank, runner.alignment.buffers,
+                cfg.storage_dir, i,
+            )
+
         # Progress every 10 tasks
         if (i + 1) % 10 == 0:
             stats = skill_bank.stats()
