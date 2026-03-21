@@ -29,9 +29,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # LLM API config (from environment variables)
-API_KEY = os.environ.get("API_KEY", "sk-DISQMJtpvWPwvub7Z4xC2IFHyzNt4gEwRB1dJ5fBzkt92wFY")
-BASE_URL = os.environ.get("BASE_URL", "https://api.qingyuntop.top/v1")
-MODEL = os.environ.get("MODEL", "deepseek-chat")
+# Default: local vLLM server (launch with: bash launch_vllm.sh)
+# Override: API_KEY=sk-xxx BASE_URL=https://api.xxx.com/v1 MODEL=deepseek-chat python3 test_pipeline.py
+API_KEY = os.environ.get("API_KEY", "EMPTY")
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000/v1")
+MODEL = os.environ.get("MODEL", "Qwen2.5-7B-Instruct")
 
 # Test parameters
 NUM_TRAIN_TASKS = 30        # Number of tasks in task stream
