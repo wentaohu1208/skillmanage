@@ -162,11 +162,33 @@ class MathBenchmark(Benchmark):
     def extract_trajectory(self, agent_output: str) -> List[str]:
         """Extract reasoning steps from CoT output.
 
-        Splits by newlines, filters empty lines.
-        Each non-empty line becomes a trajectory step.
+        Groups consecutive non-empty lines into paragraphs (split by blank lines).
+        Each paragraph becomes one trajectory step, representing a reasoning stage
+        rather than individual lines. This prevents over-fragmentation.
+
+        If no blank lines found (single paragraph), splits by sentence-ending patterns
+        and groups into chunks of ~3 sentences.
         """
-        lines = agent_output.strip().split("\n")
-        steps = [line.strip() for line in lines if line.strip()]
+        text = agent_output.strip()
+
+        # Try splitting by blank lines (paragraphs)
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+
+        if len(paragraphs) >= 2:
+            # Good paragraph structure, use it
+            return paragraphs
+
+        # No blank lines — split by lines and group into chunks
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        if len(lines) <= 4:
+            return lines
+
+        # Group every 3 lines into one step
+        chunk_size = max(len(lines) // 4, 2)  # Aim for ~4 steps
+        steps = []
+        for i in range(0, len(lines), chunk_size):
+            chunk = "\n".join(lines[i : i + chunk_size])
+            steps.append(chunk)
         return steps
 
     def get_task_types(self) -> List[str]:

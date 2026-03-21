@@ -32,16 +32,17 @@ SEGMENTATION_INTERACTIVE_PROMPT = """The following is a successful execution tra
 
 {trajectory}
 
-Please segment it into meaningful parts, where each part completes an independent sub-goal.
+Segment it into 2-4 high-level strategy phases (NOT individual steps).
+Group related steps together. For example, "navigate + pick up object" is ONE phase, not two.
 
-For each segment, provide:
-1. The steps included
-2. A one-sentence sub-goal description
+For each phase, provide:
+1. The steps included (group multiple related steps)
+2. A one-sentence strategy description (e.g., "locate and retrieve the target object")
 
 Respond in JSON:
 {{
   "segments": [
-    {{"steps": ["step1", "step2"], "subgoal": "description"}},
+    {{"steps": ["step1", "step2", "step3"], "subgoal": "strategy description"}},
     ...
   ]
 }}"""
@@ -50,16 +51,17 @@ SEGMENTATION_REASONING_PROMPT = """The following is a successful reasoning chain
 
 {trajectory}
 
-Please segment it into meaningful reasoning stages.
+Segment it into 2-4 high-level reasoning strategy phases (NOT individual calculation steps).
+Group related steps together. For example, "set up equation + solve equation" is ONE phase, not two.
 
-For each segment, provide:
-1. The reasoning steps included
-2. A one-sentence description of the reasoning goal
+For each phase, provide:
+1. The reasoning steps included (group multiple related steps)
+2. A one-sentence strategy description (e.g., "convert fractions to common denominator and add")
 
 Respond in JSON:
 {{
   "segments": [
-    {{"steps": ["step1", "step2"], "subgoal": "description"}},
+    {{"steps": ["step1", "step2", "step3"], "subgoal": "strategy description"}},
     ...
   ]
 }}"""

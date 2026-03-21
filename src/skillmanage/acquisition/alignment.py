@@ -75,10 +75,13 @@ class PatternBufferManager:
                 logger.debug("New pattern: '%s'", subgoal)
 
         # Check extraction candidates
-        return self.check_extraction_candidates(task_type, cfg)
+        return self.check_extraction_candidates(task_type, embedding_model, cfg)
 
     def check_extraction_candidates(
-        self, task_type: str, cfg: AcquisitionConfig
+        self,
+        task_type: str,
+        embedding_model: EmbeddingModel,
+        cfg: AcquisitionConfig,
     ) -> List[PatternEntry]:
         """Check which patterns are ready for extraction.
 
@@ -90,6 +93,7 @@ class PatternBufferManager:
 
         Args:
             task_type: Task type to check.
+            embedding_model: For cross-category generic check.
             cfg: Acquisition configuration.
 
         Returns:
@@ -110,7 +114,7 @@ class PatternBufferManager:
             if confidence < cfg.min_confidence:
                 continue
 
-            if self._is_cross_category_generic(pattern, cfg):
+            if self._is_cross_category_generic(pattern, embedding_model, cfg):
                 logger.debug(
                     "Skipping generic pattern '%s' (appears across categories)",
                     pattern.description,
@@ -199,23 +203,32 @@ class PatternBufferManager:
         return None
 
     def _is_cross_category_generic(
-        self, pattern: PatternEntry, cfg: AcquisitionConfig
+        self,
+        pattern: PatternEntry,
+        embedding_model: EmbeddingModel,
+        cfg: AcquisitionConfig,
     ) -> bool:
         """Check if a pattern appears uniformly across many categories.
 
         A pattern that appears in >80% of categories is too generic.
+        Uses embedding similarity (threshold 0.7) instead of exact string match,
+        so "Initiate step-by-step reasoning" matches "Begin step-by-step reasoning".
         """
         if len(self.buffers) < 2:
             return False
 
-        # Check how many categories have this pattern (by description similarity)
-        # Simplified: check exact description match
+        pattern_emb = embedding_model.encode(pattern.description)
+        match_threshold = 0.7
+
         categories_with_pattern = 0
         for task_type, buf in self.buffers.items():
-            for p in buf.patterns:
-                if p.description.lower() == pattern.description.lower():
-                    categories_with_pattern += 1
-                    break
+            if not buf.patterns:
+                continue
+            descriptions = [p.description for p in buf.patterns]
+            other_embs = embedding_model.encode(descriptions)
+            sims = batch_cosine_similarity(other_embs, pattern_emb)
+            if float(np.max(sims)) >= match_threshold:
+                categories_with_pattern += 1
 
         ratio = categories_with_pattern / len(self.buffers)
         return ratio > cfg.cross_category_ratio
