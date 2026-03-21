@@ -10,7 +10,7 @@ class AcquisitionConfig:
     min_records: int = 3
     """M: minimum records in PatternBuffer before extraction."""
 
-    min_confidence: float = 0.5
+    min_confidence: float = 0.3
     """r: minimum pattern confidence (count/total) for extraction."""
 
     min_failure_steps: int = 2
@@ -19,7 +19,7 @@ class AcquisitionConfig:
     low_confidence_init: float = 0.5
     """Initial confidence for skills derived from failure analysis."""
 
-    pattern_match_threshold: float = 0.7
+    pattern_match_threshold: float = 0.6
     """Semantic similarity threshold for matching segments to existing patterns."""
 
     cross_category_ratio: float = 0.8
@@ -47,10 +47,10 @@ class ActiveConfig:
     merge_threshold: float = 0.8
     """tau_merge: similarity threshold for merging two skills."""
 
-    archive_threshold: float = 0.3
+    archive_threshold: float = 0.2
     """theta_archive: importance score below which a skill may be archived."""
 
-    consecutive_rounds: int = 3
+    consecutive_rounds: int = 5
     """T1: consecutive rounds below threshold before archiving."""
 
     weight_recency: float = 0.3

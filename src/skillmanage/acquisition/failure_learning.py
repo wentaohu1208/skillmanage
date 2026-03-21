@@ -147,7 +147,7 @@ class FailureLearner:
 
         return Skill(
             skill_id=generate_skill_id("sk"),
-            name=f"avoid_{warning_text[:20].replace(' ', '_').lower()}",
+            name=f"avoid_{warning_text[:50].replace(' ', '_').lower().strip('_')}",
             description=warning_text,
             steps=[warning_text],
             warnings=[],

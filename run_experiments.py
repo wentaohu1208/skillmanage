@@ -1,14 +1,18 @@
-"""Run multiple small experiments for comparison.
+"""Geometry L4-L5 experiments: no-skill baseline vs skill lifecycle.
 
-Experiment 1: Each subject x 30 tasks (with skill lifecycle)
-Experiment 2: Same tasks, no skill (baseline)
-Experiment 3: Cross-subject skill transfer (subject A's skills used for subject B)
+Experiment 1 (deepseek-chat): No skill baseline
+Experiment 2 (deepseek-chat): With skill lifecycle
+Experiment 3 (qwen2.5-7b):   No skill baseline
+Experiment 4 (qwen2.5-7b):   With skill lifecycle
 
 Usage:
-    python3 run_experiments.py --exp 1    # Run experiment 1 only
-    python3 run_experiments.py --exp 2    # Run experiment 2 only
-    python3 run_experiments.py --exp 3    # Run experiment 3 only
-    python3 run_experiments.py --exp all  # Run all experiments
+    python3 run_experiments.py --exp 1      # deepseek no-skill
+    python3 run_experiments.py --exp 2      # deepseek with-skill
+    python3 run_experiments.py --exp 3      # qwen no-skill
+    python3 run_experiments.py --exp 4      # qwen with-skill
+    python3 run_experiments.py --exp all    # all experiments
+    python3 run_experiments.py --exp ds     # deepseek both (1+2)
+    python3 run_experiments.py --exp qwen   # qwen both (3+4)
 """
 
 import argparse
@@ -33,78 +37,164 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_KEY = os.environ.get("API_KEY", "sk-DISQMJtpvWPwvub7Z4xC2IFHyzNt4gEwRB1dJ5fBzkt92wFY")
-BASE_URL = os.environ.get("BASE_URL", "https://api.qingyuntop.top/v1")
-MODEL = os.environ.get("MODEL", "deepseek-chat")
+# LLM configs
+DEEPSEEK_API_KEY = os.environ.get("DS_API_KEY", "sk-DISQMJtpvWPwvub7Z4xC2IFHyzNt4gEwRB1dJ5fBzkt92wFY")
+DEEPSEEK_BASE_URL = "https://api.qingyuntop.top/v1"
+DEEPSEEK_MODEL = "deepseek-chat"
+
+QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "sk-xEX3XN7CU8PMfvbhudubGbKDsp5MTEUAiow3JOxud0JptXr1")
+QWEN_BASE_URL = "https://api.qingyuntop.top/v1"
+QWEN_MODEL = "Qwen2.5-7B-Instruct"
+
+# Experiment settings
 MATH_DATA_PATH = os.environ.get("MATH_DATA_PATH", "/data/hwt/hf_data/math")
+SUBJECT = "geometry"
+LEVELS = [4, 5]
+NUM_TRAIN = None   # None = full (geometry L4: 177 train, L5: 421 train = 598 total)
+NUM_TEST = None    # None = full (geometry L4: 125 test, L5: 132 test = 257 total)
+OUTPUT_BASE = os.environ.get("OUTPUT_BASE", "/data/hwt/skillmanage/experiments_geometry")
 
-SUBJECTS = ["algebra", "prealgebra", "number_theory", "geometry", "counting_and_probability"]
-LEVELS = [4, 5]           # 改为难题，Level 1-2已饱和
-NUM_TRAIN = 50            # 增加到50题，30题太少
-NUM_TEST = 20             # 增加到20题
-OUTPUT_BASE = os.environ.get("OUTPUT_BASE", "/data/hwt/skillmanage/experiments_v2")
+
+# ---------------------------------------------------------------------------
+# Shared setup
+# ---------------------------------------------------------------------------
 
 
-def get_shared_components():
-    """Create shared LLM client and embedding model (reused across experiments)."""
-    from skillmanage.config import EmbeddingConfig, LLMConfig
-    from skillmanage.core.embedding import EmbeddingModel
-    from skillmanage.llm import create_llm_client
-
-    llm_client = create_llm_client(
+def create_llm_client(api_key: str, base_url: str, model: str):
+    """Create an LLM client."""
+    from skillmanage.llm import create_llm_client as _create
+    return _create(
         "openai",
-        base_url=BASE_URL,
-        api_key=API_KEY,
-        model_name=MODEL,
+        base_url=base_url,
+        api_key=api_key,
+        model_name=model,
         temperature=0.0,
-        max_tokens=1024,
+        max_tokens=2048,
     )
 
-    embedding_model = EmbeddingModel(
+
+def create_embedding_model():
+    """Create shared embedding model."""
+    from skillmanage.config import EmbeddingConfig
+    from skillmanage.core.embedding import EmbeddingModel
+    emb = EmbeddingModel(
         EmbeddingConfig(model_name="/data/hwt/hf_ckpt/Qwen3-Embedding-0.6B", dimension=1024)
     )
-    # Force load
-    _ = embedding_model.encode("test")
-
-    return llm_client, embedding_model
+    _ = emb.encode("test")
+    return emb
 
 
-def run_single_subject(subject, llm_client, embedding_model, output_dir, use_skill=True):
-    """Run one subject with or without skill lifecycle.
+def load_all_tasks():
+    """Load geometry L4-L5 train and test tasks (one bench object, called once)."""
+    from skillmanage.benchmark import create_benchmark
+    bench = create_benchmark("math", subjects=[SUBJECT], levels=LEVELS, dataset_name=MATH_DATA_PATH)
+    train = bench.load_tasks(split="train", limit=NUM_TRAIN)
+    test = bench.load_tasks(split="test", limit=NUM_TEST)
+    logger.info("Loaded %d train + %d test tasks (geometry L4-L5)", len(train), len(test))
+    return bench, train, test
 
-    Args:
-        subject: MATH subject name.
-        llm_client: LLM client.
-        embedding_model: Embedding model.
-        output_dir: Where to save checkpoints.
-        use_skill: If False, disable skill retrieval and acquisition (baseline).
 
-    Returns:
-        Dict with results summary.
-    """
-    from skillmanage.benchmark import AgentRunner, create_benchmark
+# ---------------------------------------------------------------------------
+# Run functions
+# ---------------------------------------------------------------------------
+
+
+def run_no_skill(model_name: str, llm_client, bench, train_tasks, test_tasks, output_dir: str) -> dict:
+    """Run without skill bank (pure LLM baseline)."""
+    from skillmanage.benchmark.base import TaskResult
+    from skillmanage.benchmark.math_bench import extract_boxed_answer
+
+    os.makedirs(output_dir, exist_ok=True)
+    logger.info("Running NO-SKILL baseline (%s): %d train, %d test", model_name, len(train_tasks), len(test_tasks))
+
+    def _run_one(task):
+        prompt = bench.build_prompt(task, "")
+        system_prompt = getattr(bench, "system_prompt", "")
+        output = llm_client.generate(prompt, system_prompt=system_prompt)
+        success, reward = bench.check_answer(task, output)
+        return TaskResult(
+            task_id=task.task_id, task_type=task.task_type,
+            success=success, reward=reward,
+            agent_answer=output, ground_truth=task.ground_truth,
+            trajectory=bench.extract_trajectory(output),
+            num_steps=0,
+        )
+
+    # Train
+    train_results = []
+    for i, task in enumerate(train_tasks):
+        try:
+            result = _run_one(task)
+            train_results.append(result)
+            pred = extract_boxed_answer(result.agent_answer)
+            status = "OK" if result.success else "X"
+            logger.info("[%s no-skill] Train %d/%d %s | pred=%s gt=%s",
+                        model_name, i+1, len(train_tasks), status, pred[:20], task.ground_truth[:20])
+        except Exception as e:
+            logger.error("[%s no-skill] Train %d FAILED: %s", model_name, i+1, e)
+
+    # Test
+    test_results = []
+    for i, task in enumerate(test_tasks):
+        try:
+            result = _run_one(task)
+            test_results.append(result)
+            pred = extract_boxed_answer(result.agent_answer)
+            status = "OK" if result.success else "X"
+            logger.info("[%s no-skill] Test %d/%d %s | pred=%s gt=%s",
+                        model_name, i+1, len(test_tasks), status, pred[:20], task.ground_truth[:20])
+        except Exception as e:
+            logger.error("[%s no-skill] Test %d FAILED: %s", model_name, i+1, e)
+
+    train_correct = sum(1 for r in train_results if r.success)
+    test_correct = sum(1 for r in test_results if r.success)
+
+    summary = {
+        "model": model_name,
+        "use_skill": False,
+        "subject": SUBJECT,
+        "levels": LEVELS,
+        "train_total": len(train_tasks),
+        "train_processed": len(train_results),
+        "train_correct": train_correct,
+        "train_sr": train_correct / len(train_tasks) if train_tasks else 0,
+        "train_errors": len(train_tasks) - len(train_results),
+        "test_total": len(test_tasks),
+        "test_processed": len(test_results),
+        "test_correct": test_correct,
+        "test_sr": test_correct / len(test_tasks) if test_tasks else 0,
+        "test_errors": len(test_tasks) - len(test_results),
+    }
+
+    with open(os.path.join(output_dir, "summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+
+    logger.info("[%s no-skill] Train SR: %d/%d = %.1f%%", model_name,
+                train_correct, len(train_results), summary["train_sr"]*100)
+    logger.info("[%s no-skill] Test SR:  %d/%d = %.1f%%", model_name,
+                test_correct, len(test_results), summary["test_sr"]*100)
+
+    return summary
+
+
+def run_with_skill(model_name: str, llm_client, embedding_model, bench, train_tasks, test_tasks, output_dir: str) -> dict:
+    """Run with skill lifecycle, then evaluate test with final skill bank."""
+    from skillmanage.benchmark import AgentRunner
     from skillmanage.benchmark.math_bench import extract_boxed_answer
     from skillmanage.config import RetrievalConfig, SkillManageConfig
     from skillmanage.core.skill_bank import SkillBank
     from skillmanage.core.storage import save_checkpoint
 
-    # Config
+    os.makedirs(output_dir, exist_ok=True)
+    logger.info("Running WITH-SKILL (%s): %d train, %d test", model_name, len(train_tasks), len(test_tasks))
+
     cfg = SkillManageConfig(
-        retrieval=RetrievalConfig(
-            top_k=2 if use_skill else 0,  # top_k=0 means no retrieval
-            similarity_threshold=0.3,
-            token_budget=1000,
-        ),
+        retrieval=RetrievalConfig(top_k=3, similarity_threshold=0.3, token_budget=2000),
         storage_dir=output_dir,
-        checkpoint_interval=1,
+        checkpoint_interval=50,
     )
 
     skill_bank = SkillBank(embedding_dim=1024)
-    bench = create_benchmark("math", subjects=[subject], levels=LEVELS, dataset_name=MATH_DATA_PATH)
-
-    train_tasks = bench.load_tasks(split="train", limit=NUM_TRAIN)
-    test_tasks = bench.load_tasks(split="test", limit=NUM_TEST)
-
     runner = AgentRunner(
         benchmark=bench,
         skill_bank=skill_bank,
@@ -113,187 +203,71 @@ def run_single_subject(subject, llm_client, embedding_model, output_dir, use_ski
         cfg=cfg,
     )
 
-    # Run task stream
-    results = []
+    # Train (with skill accumulation)
+    train_results = []
     for i, task in enumerate(train_tasks):
         try:
-            if use_skill:
-                result = runner.run_task(task, current_round=i)
-            else:
-                # Baseline: just run LLM without any skill
-                result = _run_no_skill(task, bench, llm_client)
-            results.append(result)
+            result = runner.run_task(task, current_round=i)
+            train_results.append(result)
 
             pred = extract_boxed_answer(result.agent_answer)
             status = "OK" if result.success else "X"
-            logger.info(
-                "[%s] Task %d/%d %s | pred=%s gt=%s",
-                subject, i + 1, len(train_tasks), status,
-                pred[:20], task.ground_truth[:20],
-            )
+            stats = skill_bank.stats()
+            logger.info("[%s skill] Train %d/%d %s | pred=%s gt=%s | active=%d archive=%d",
+                        model_name, i+1, len(train_tasks), status,
+                        pred[:20], task.ground_truth[:20],
+                        stats["active"], stats["archive"])
         except Exception as e:
-            logger.error("[%s] Task %d FAILED: %s", subject, i + 1, e)
-            continue
+            logger.error("[%s skill] Train %d FAILED: %s", model_name, i+1, e)
 
-        # Checkpoint every round
-        if use_skill and (i + 1) % cfg.checkpoint_interval == 0:
+        # Checkpoint every 50 rounds
+        if (i + 1) % cfg.checkpoint_interval == 0:
             save_checkpoint(skill_bank, runner.alignment.buffers, output_dir, i)
 
     # Save final checkpoint
-    os.makedirs(output_dir, exist_ok=True)
-    if use_skill:
-        save_checkpoint(skill_bank, runner.alignment.buffers, output_dir, len(train_tasks) - 1)
+    save_checkpoint(skill_bank, runner.alignment.buffers, output_dir, len(train_tasks) - 1)
 
-    # Eval on test
-    if use_skill and test_tasks:
-        eval_sr = runner.evaluate(test_tasks)
-    else:
-        eval_correct = 0
-        for task in test_tasks:
-            try:
-                r = _run_no_skill(task, bench, llm_client) if not use_skill else runner.run_task(task, 9999)
-                if r.success:
-                    eval_correct += 1
-            except Exception:
-                pass
-        eval_sr = eval_correct / len(test_tasks) if test_tasks else 0
+    # Test (frozen skill bank)
+    logger.info("Evaluating on %d test tasks with final skill bank (active=%d)...",
+                len(test_tasks), len(skill_bank.active))
+    test_sr = runner.evaluate(test_tasks)
 
-    # Summary
-    train_correct = sum(1 for r in results if r.success)
+    train_correct = sum(1 for r in train_results if r.success)
+    stats = skill_bank.stats()
+
     summary = {
-        "subject": subject,
-        "use_skill": use_skill,
-        "train_tasks": len(results),
+        "model": model_name,
+        "use_skill": True,
+        "subject": SUBJECT,
+        "levels": LEVELS,
+        "train_total": len(train_tasks),
+        "train_processed": len(train_results),
         "train_correct": train_correct,
-        "train_sr": train_correct / len(results) if results else 0,
-        "test_sr": eval_sr,
-        "active_skills": skill_bank.stats()["active"] if use_skill else 0,
-        "archive_skills": skill_bank.stats()["archive"] if use_skill else 0,
+        "train_sr": train_correct / len(train_tasks) if train_tasks else 0,
+        "train_errors": len(train_tasks) - len(train_results),
+        "test_total": len(test_tasks),
+        "test_sr": test_sr,
+        "active_skills": stats["active"],
+        "archive_skills": stats["archive"],
+        "forgotten_skills": stats["forgotten"],
+        "active_tokens": stats["active_tokens"],
     }
 
-    # Save summary
+    # Log active skills
+    logger.info("[%s skill] Active skills:", model_name)
+    for sid, askill in skill_bank.active.items():
+        logger.info("  '%s' calls=%d sr=%.2f tokens=%d",
+                     askill.skill.name, askill.meta.call_count,
+                     askill.meta.success_rate, askill.skill.token_cost)
+
     with open(os.path.join(output_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
-    return summary
-
-
-def _run_no_skill(task, bench, llm_client):
-    """Run a single task without any skill (pure LLM baseline)."""
-    from skillmanage.benchmark.base import TaskResult
-
-    prompt = bench.build_prompt(task, "")  # Empty skills_prompt
-    system_prompt = getattr(bench, "system_prompt", "")
-    agent_output = llm_client.generate(prompt, system_prompt=system_prompt)
-    success, reward = bench.check_answer(task, agent_output)
-    trajectory = bench.extract_trajectory(agent_output)
-
-    return TaskResult(
-        task_id=task.task_id,
-        task_type=task.task_type,
-        success=success,
-        reward=reward,
-        trajectory=trajectory,
-        agent_answer=agent_output,
-        ground_truth=task.ground_truth,
-        num_steps=len(trajectory),
-    )
-
-
-def run_with_transferred_skills(
-    source_subject, target_subject, llm_client, embedding_model, output_dir
-):
-    """Run target subject using skills learned from source subject.
-
-    1. Load skill bank from source subject's experiment 1 output.
-    2. Run target subject tasks using those skills (no new skill acquisition).
-
-    Returns:
-        Dict with results summary.
-    """
-    from skillmanage.benchmark import AgentRunner, create_benchmark
-    from skillmanage.benchmark.math_bench import extract_boxed_answer
-    from skillmanage.config import RetrievalConfig, SkillManageConfig
-    from skillmanage.core.storage import load_checkpoint
-
-    # Load source skill bank
-    source_dir = os.path.join(OUTPUT_BASE, "exp1_per_subject", source_subject)
-    try:
-        skill_bank, pattern_buffers, _ = load_checkpoint(source_dir, embedding_dim=1024)
-        logger.info(
-            "Loaded source skills from %s: active=%d",
-            source_subject, len(skill_bank.active),
-        )
-    except Exception as e:
-        logger.error("Failed to load source skills from %s: %s", source_dir, e)
-        return {"error": str(e)}
-
-    # Run target subject with frozen source skills (no acquisition)
-    cfg = SkillManageConfig(
-        retrieval=RetrievalConfig(top_k=2, similarity_threshold=0.3, token_budget=1000),
-        storage_dir=output_dir,
-        checkpoint_interval=1,
-    )
-
-    bench = create_benchmark("math", subjects=[target_subject], levels=LEVELS, dataset_name=MATH_DATA_PATH)
-    test_tasks = bench.load_tasks(split="test", limit=NUM_TEST)
-    train_tasks = bench.load_tasks(split="train", limit=NUM_TRAIN)
-
-    # Run without acquisition — just use source skills
-    results = []
-    for i, task in enumerate(train_tasks):
-        try:
-            # Manually retrieve + run (skip acquisition)
-            from skillmanage.core.retrieval import SkillRetriever
-            retriever = SkillRetriever()
-            active_skills, archive_hit = retriever.retrieve(
-                task.instruction, skill_bank, embedding_model, cfg.retrieval
-            )
-            used_skills = list(active_skills)
-            if archive_hit:
-                used_skills = [archive_hit.original_skill_full]
-
-            skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
-            prompt = bench.build_prompt(task, skills_prompt)
-            system_prompt = getattr(bench, "system_prompt", "")
-            agent_output = llm_client.generate(prompt, system_prompt=system_prompt)
-            success, reward = bench.check_answer(task, agent_output)
-
-            from skillmanage.benchmark.base import TaskResult
-            result = TaskResult(
-                task_id=task.task_id, task_type=task.task_type,
-                success=success, reward=reward,
-                agent_answer=agent_output, ground_truth=task.ground_truth,
-                used_skill_ids=[s.skill_id for s in used_skills],
-                num_steps=0,
-            )
-            results.append(result)
-
-            pred = extract_boxed_answer(agent_output)
-            status = "OK" if success else "X"
-            n_skills = len(used_skills)
-            logger.info(
-                "[%s→%s] Task %d/%d %s | skills_used=%d | pred=%s gt=%s",
-                source_subject, target_subject, i + 1, len(train_tasks),
-                status, n_skills, pred[:20], task.ground_truth[:20],
-            )
-        except Exception as e:
-            logger.error("[%s→%s] Task %d FAILED: %s", source_subject, target_subject, i + 1, e)
-            continue
-
-    train_correct = sum(1 for r in results if r.success)
-    summary = {
-        "source_subject": source_subject,
-        "target_subject": target_subject,
-        "train_tasks": len(results),
-        "train_correct": train_correct,
-        "train_sr": train_correct / len(results) if results else 0,
-        "source_active_skills": len(skill_bank.active),
-    }
-
-    os.makedirs(output_dir, exist_ok=True)
-    with open(os.path.join(output_dir, "summary.json"), "w") as f:
-        json.dump(summary, f, indent=2)
+    logger.info("[%s skill] Train SR: %d/%d = %.1f%%", model_name,
+                train_correct, len(train_results), summary["train_sr"]*100)
+    logger.info("[%s skill] Test SR:  %.1f%%", model_name, test_sr*100)
+    logger.info("[%s skill] SkillBank: active=%d archive=%d forgotten=%d tokens=%d",
+                model_name, stats["active"], stats["archive"], stats["forgotten"], stats["active_tokens"])
 
     return summary
 
@@ -303,121 +277,107 @@ def run_with_transferred_skills(
 # ---------------------------------------------------------------------------
 
 
-def experiment_1(llm_client, embedding_model):
-    """Exp1: Each subject x 30 tasks with skill lifecycle."""
+def experiment_1(bench, train_tasks, test_tasks):
+    """DeepSeek no-skill baseline."""
     logger.info("=" * 60)
-    logger.info("EXPERIMENT 1: Per-subject with skill lifecycle")
+    logger.info("EXP 1: DeepSeek-chat NO SKILL (geometry L4-L5)")
     logger.info("=" * 60)
-
-    all_summaries = {}
-    for subject in SUBJECTS:
-        logger.info("\n--- Subject: %s ---", subject)
-        output_dir = os.path.join(OUTPUT_BASE, "exp1_per_subject", subject)
-        summary = run_single_subject(subject, llm_client, embedding_model, output_dir, use_skill=True)
-        all_summaries[subject] = summary
-        logger.info("Result: train_sr=%.1f%%, test_sr=%.1f%%, active=%d",
-                     summary["train_sr"] * 100, summary["test_sr"] * 100, summary["active_skills"])
-
-    # Print comparison table
-    print("\n=== Experiment 1: Per-subject with skills ===")
-    print(f"{'Subject':<25} {'Train SR':<12} {'Test SR':<12} {'Active':<8} {'Archive':<8}")
-    print("-" * 65)
-    for subj, s in all_summaries.items():
-        print(f"{subj:<25} {s['train_sr']*100:>6.1f}%     {s['test_sr']*100:>6.1f}%     {s['active_skills']:<8} {s['archive_skills']:<8}")
-
-    with open(os.path.join(OUTPUT_BASE, "exp1_summary.json"), "w") as f:
-        json.dump(all_summaries, f, indent=2)
+    llm = create_llm_client(DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL)
+    llm.generate("test")
+    return run_no_skill("deepseek", llm, bench, train_tasks, test_tasks,
+                        os.path.join(OUTPUT_BASE, "exp1_deepseek_no_skill"))
 
 
-def experiment_2(llm_client, embedding_model):
-    """Exp2: Same tasks, no skill (baseline)."""
+def experiment_2(bench, train_tasks, test_tasks):
+    """DeepSeek with skill lifecycle."""
     logger.info("=" * 60)
-    logger.info("EXPERIMENT 2: Per-subject NO skill (baseline)")
+    logger.info("EXP 2: DeepSeek-chat WITH SKILL (geometry L4-L5)")
     logger.info("=" * 60)
-
-    all_summaries = {}
-    for subject in SUBJECTS:
-        logger.info("\n--- Subject: %s (no skill) ---", subject)
-        output_dir = os.path.join(OUTPUT_BASE, "exp2_no_skill", subject)
-        summary = run_single_subject(subject, llm_client, embedding_model, output_dir, use_skill=False)
-        all_summaries[subject] = summary
-        logger.info("Result: train_sr=%.1f%%, test_sr=%.1f%%",
-                     summary["train_sr"] * 100, summary["test_sr"] * 100)
-
-    print("\n=== Experiment 2: Per-subject NO skills (baseline) ===")
-    print(f"{'Subject':<25} {'Train SR':<12} {'Test SR':<12}")
-    print("-" * 50)
-    for subj, s in all_summaries.items():
-        print(f"{subj:<25} {s['train_sr']*100:>6.1f}%     {s['test_sr']*100:>6.1f}%")
-
-    with open(os.path.join(OUTPUT_BASE, "exp2_summary.json"), "w") as f:
-        json.dump(all_summaries, f, indent=2)
+    llm = create_llm_client(DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL)
+    llm.generate("test")
+    emb = create_embedding_model()
+    return run_with_skill("deepseek", llm, emb, bench, train_tasks, test_tasks,
+                          os.path.join(OUTPUT_BASE, "exp2_deepseek_with_skill"))
 
 
-def experiment_3(llm_client, embedding_model):
-    """Exp3: Cross-subject skill transfer (A's skills for B)."""
+def experiment_3(bench, train_tasks, test_tasks):
+    """Qwen2.5-7B no-skill baseline."""
     logger.info("=" * 60)
-    logger.info("EXPERIMENT 3: Cross-subject skill transfer")
+    logger.info("EXP 3: Qwen2.5-7B NO SKILL (geometry L4-L5)")
     logger.info("=" * 60)
+    llm = create_llm_client(QWEN_API_KEY, QWEN_BASE_URL, QWEN_MODEL)
+    llm.generate("test")
+    return run_no_skill("qwen7b", llm, bench, train_tasks, test_tasks,
+                        os.path.join(OUTPUT_BASE, "exp3_qwen_no_skill"))
 
-    # Transfer pairs: source → target
-    transfer_pairs = [
-        ("algebra", "prealgebra"),           # similar
-        ("algebra", "geometry"),             # different
-        ("prealgebra", "number_theory"),     # different
-        ("geometry", "algebra"),             # reverse
-        ("counting_and_probability", "algebra"),  # different
-    ]
 
-    all_summaries = {}
-    for source, target in transfer_pairs:
-        logger.info("\n--- Transfer: %s → %s ---", source, target)
-        output_dir = os.path.join(OUTPUT_BASE, "exp3_transfer", f"{source}_to_{target}")
-        summary = run_with_transferred_skills(
-            source, target, llm_client, embedding_model, output_dir
-        )
-        all_summaries[f"{source}→{target}"] = summary
-        if "error" not in summary:
-            logger.info("Result: train_sr=%.1f%%, source_skills=%d",
-                         summary["train_sr"] * 100, summary["source_active_skills"])
+def experiment_4(bench, train_tasks, test_tasks):
+    """Qwen2.5-7B with skill lifecycle."""
+    logger.info("=" * 60)
+    logger.info("EXP 4: Qwen2.5-7B WITH SKILL (geometry L4-L5)")
+    logger.info("=" * 60)
+    llm = create_llm_client(QWEN_API_KEY, QWEN_BASE_URL, QWEN_MODEL)
+    llm.generate("test")
+    emb = create_embedding_model()
+    return run_with_skill("qwen7b", llm, emb, bench, train_tasks, test_tasks,
+                          os.path.join(OUTPUT_BASE, "exp4_qwen_with_skill"))
 
-    print("\n=== Experiment 3: Cross-subject skill transfer ===")
-    print(f"{'Transfer':<30} {'Train SR':<12} {'Source Skills':<15}")
-    print("-" * 57)
-    for pair, s in all_summaries.items():
-        if "error" in s:
-            print(f"{pair:<30} ERROR: {s['error'][:30]}")
+
+def print_comparison(summaries: dict) -> None:
+    """Print comparison table."""
+    print("\n" + "=" * 80)
+    print("RESULTS COMPARISON: Geometry L4-L5")
+    print("=" * 80)
+    print(f"{'Experiment':<35} {'Model':<12} {'Skill':<8} {'Train SR':<12} {'Test SR':<12}")
+    print("-" * 80)
+    for name, s in summaries.items():
+        skill_str = "Yes" if s.get("use_skill") else "No"
+        model = s.get("model", "?")
+        train_sr = f"{s['train_sr']*100:.1f}% ({s['train_correct']}/{s['train_total']})"
+        if "test_sr" in s:
+            test_sr = f"{s['test_sr']*100:.1f}%"
         else:
-            print(f"{pair:<30} {s['train_sr']*100:>6.1f}%     {s['source_active_skills']:<15}")
+            test_sr = "N/A"
+        print(f"{name:<35} {model:<12} {skill_str:<8} {train_sr:<12} {test_sr:<12}")
 
-    with open(os.path.join(OUTPUT_BASE, "exp3_summary.json"), "w") as f:
-        json.dump(all_summaries, f, indent=2)
+    # Skill bank info for with-skill experiments
+    for name, s in summaries.items():
+        if s.get("use_skill"):
+            print(f"\n  {name}: active={s.get('active_skills',0)}, archive={s.get('archive_skills',0)}, tokens={s.get('active_tokens',0)}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run skill lifecycle experiments")
-    parser.add_argument("--exp", type=str, default="all", help="Which experiment: 1, 2, 3, or all")
+    parser = argparse.ArgumentParser(description="Geometry L4-L5 experiments")
+    parser.add_argument("--exp", type=str, default="all",
+                        help="1/2/3/4/ds/qwen/all")
     args = parser.parse_args()
-
-    logger.info("Initializing shared components...")
-    llm_client, embedding_model = get_shared_components()
-
-    # Quick LLM test
-    resp = llm_client.generate("What is 2+3? Answer with just the number.")
-    logger.info("LLM OK: %s", resp.strip())
 
     os.makedirs(OUTPUT_BASE, exist_ok=True)
 
-    if args.exp in ("1", "all"):
-        experiment_1(llm_client, embedding_model)
+    # Load tasks once, reuse for all experiments
+    logger.info("Loading tasks...")
+    bench, train_tasks, test_tasks = load_all_tasks()
 
-    if args.exp in ("2", "all"):
-        experiment_2(llm_client, embedding_model)
+    all_summaries = {}
 
-    if args.exp in ("3", "all"):
-        experiment_3(llm_client, embedding_model)
+    if args.exp in ("1", "ds", "all"):
+        all_summaries["exp1_deepseek_no_skill"] = experiment_1(bench, train_tasks, test_tasks)
 
-    logger.info("\nAll requested experiments done. Results in: %s", OUTPUT_BASE)
+    if args.exp in ("2", "ds", "all"):
+        all_summaries["exp2_deepseek_with_skill"] = experiment_2(bench, train_tasks, test_tasks)
+
+    if args.exp in ("3", "qwen", "all"):
+        all_summaries["exp3_qwen_no_skill"] = experiment_3(bench, train_tasks, test_tasks)
+
+    if args.exp in ("4", "qwen", "all"):
+        all_summaries["exp4_qwen_with_skill"] = experiment_4(bench, train_tasks, test_tasks)
+
+    if all_summaries:
+        print_comparison(all_summaries)
+        with open(os.path.join(OUTPUT_BASE, "all_summaries.json"), "w") as f:
+            json.dump(all_summaries, f, indent=2)
+
+    logger.info("\nDone. Results in: %s", OUTPUT_BASE)
 
 
 if __name__ == "__main__":

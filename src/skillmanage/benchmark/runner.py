@@ -224,27 +224,32 @@ class AgentRunner:
             Success rate (0-1).
         """
         correct = 0
+        total = 0
         for task in tasks:
-            # Retrieve skills (same as normal)
-            active_skills, archive_hit = self.retriever.retrieve(
-                task.instruction, self.skill_bank, self.embedding_model, self.cfg.retrieval,
-            )
-            used_skills = list(active_skills)
-            if archive_hit:
-                used_skills = [archive_hit.original_skill_full]
+            try:
+                active_skills, archive_hit = self.retriever.retrieve(
+                    task.instruction, self.skill_bank, self.embedding_model, self.cfg.retrieval,
+                )
+                used_skills = list(active_skills)
+                if archive_hit:
+                    used_skills = [archive_hit.original_skill_full]
 
-            skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
+                skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
 
-            if self.benchmark.get_interaction_mode() == InteractionMode.SINGLE_TURN:
-                agent_output = self._run_single_turn(task, skills_prompt)
-            else:
-                agent_output = self._run_multi_step(task, used_skills)
+                if self.benchmark.get_interaction_mode() == InteractionMode.SINGLE_TURN:
+                    agent_output = self._run_single_turn(task, skills_prompt)
+                else:
+                    agent_output = self._run_multi_step(task, used_skills)
 
-            success, _ = self.benchmark.check_answer(task, agent_output)
-            if success:
-                correct += 1
+                success, _ = self.benchmark.check_answer(task, agent_output)
+                if success:
+                    correct += 1
+                total += 1
+            except Exception as e:
+                logger.error("Evaluate task %s failed: %s", task.task_id, e)
+                total += 1
 
-        sr = correct / len(tasks) if tasks else 0.0
+        sr = correct / total if total > 0 else 0.0
         return sr
 
     # ------------------------------------------------------------------
