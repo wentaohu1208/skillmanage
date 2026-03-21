@@ -29,7 +29,7 @@ def save_checkpoint(
         path: Directory to save files.
         current_round: Current round number (for metadata).
     """
-    base = Path(path)
+    base = Path(path) / f"round_{current_round:05d}"
     base.mkdir(parents=True, exist_ok=True)
 
     # Active skills
