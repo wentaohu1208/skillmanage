@@ -10,7 +10,7 @@
 export HF_ENDPOINT=https://hf-mirror.com
 
 DATASET="EleutherAI/hendrycks_math"
-OUTPUT_DIR="/data/hwt/hf_data"
+OUTPUT_DIR="/data/hwt/hf_data/math"
 
 mkdir -p "$OUTPUT_DIR"
 
