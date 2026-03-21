@@ -21,3 +21,4 @@ checkpoints/
 
 *.sqlite
 *.db
+experiments/
