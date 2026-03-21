@@ -98,8 +98,8 @@ class ForgottenConfig:
 class EmbeddingConfig:
     """Embedding model configuration."""
 
-    model_name: str = "all-MiniLM-L6-v2"
-    dimension: int = 384
+    model_name: str = "/data/hwt/hf_ckpt/Qwen3-Embedding-0.6B"
+    dimension: int = 1024
 
 
 @dataclass(frozen=True)

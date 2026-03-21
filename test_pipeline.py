@@ -69,7 +69,7 @@ def main() -> None:
             similarity_threshold=0.3,
             token_budget=TOKEN_BUDGET,
         ),
-        embedding=EmbeddingConfig(model_name="all-MiniLM-L6-v2", dimension=384),
+        embedding=EmbeddingConfig(model_name="/data/hwt/hf_ckpt/Qwen3-Embedding-0.6B", dimension=1024),
         llm=LLMConfig(
             provider="openai",
             base_url=BASE_URL,
@@ -108,7 +108,7 @@ def main() -> None:
     logger.info("Embedding model loaded OK (dim=%d)", cfg.embedding.dimension)
 
     # --- Step 3: Init SkillBank (empty) ---
-    skill_bank = SkillBank(embedding_dim=cfg.embedding.dimension)
+    skill_bank = SkillBank(embedding_dim=1024)
     logger.info("SkillBank initialized (empty): %s", skill_bank.stats())
 
     # --- Step 4: Load MATH data ---
