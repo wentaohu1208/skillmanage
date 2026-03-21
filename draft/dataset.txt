@@ -1,0 +1,486 @@
+┌──────────┬─────────┬──────────────┬────────────────────────┐                                                                                                                            
+  │  数据集  │  Train  │     Test     │        划分情况        │                                                                                                                          
+  ├──────────┼─────────┼──────────────┼────────────────────────┤
+  │ BBH      │ ❌ 无   │ 6,511        │ 只有测试集，没有训练集 │                                                                                                                            
+  ├──────────┼─────────┼──────────────┼────────────────────────┤
+  │ MATH     │ 7,500   │ 5,000        │ ✅ 明确划分            │                                                                                                                            
+  ├──────────┼─────────┼──────────────┼────────────────────────┤                                                                                                                            
+  │ ALFWorld │ 3,553   │ 134 (unseen) │ ✅ 明确划分            │                                                                                                                            
+  ├──────────┼─────────┼──────────────┼────────────────────────┤                                                                                                                            
+  │ WebShop  │ ~11,587 │ 500          │ ✅ 明确划分            │                                                                                                                          
+  └──────────┴─────────┴──────────────┴────────────────────────┘                                                                                                                            
+                                                                                                                                                                                          
+  对你的实验意味着什么                                                                                                                                                                      
+                                                                                                                                                                                          
+  你的框架不需要传统意义上的"训练集"来训练模型。你需要的是一个sequential task stream来让skill bank边跑边积累。                                                                              
+                                                                                                                                                                                          
+  你的实验需要的：                                                                                                                                                                          
+    一段长任务流（用来积累和管理skill）+ 一个测试集（评测最终performance）                                                                                                                  
+                                                                                                                                                                                            
+  具体怎么用：                                                                                                                                                                              
+                                                                                                                                                                                            
+  MATH（有train/test）：                                                                                                                                                                    
+  Task stream: 用train的7,500题积累skill bank                                                                                                                                             
+  评测:        在test的5,000题上测最终SR     
+               每跑完一批train题就在test上评测一次，画learning curve                                                                                                                        
+                                                                                                                                                                                            
+  ALFWorld（有train/test）：                                                                                                                                                                
+  Task stream: 用train的3,553个任务积累skill bank                                                                                                                                           
+  评测:        在134个test unseen任务上测SR                                                                                                                                                 
+                                                                                                                                                                                            
+  WebShop（有train/test）：                                                                                                                                                                 
+  Task stream: 用train的~11,587条指令积累skill bank                                                                                                                                         
+  评测:        在500个test指令上测Avg Score + SR                                                                                                                                            
+                                                                                                                                                                                          
+  BBH（只有test，没有train）：                                                                                                                                                              
+  问题：只有6,511题，没有划分                                                                                                                                                             
+                                                                                                                                                                                            
+  方案：自己划分                                                                                                                                                                          
+    从每个任务类型中随机抽70%作为task stream，30%作为test                                                                                                                                   
+                                                                                                                                                                                          
+    例：boolean_expressions 250题                                                                                                                                                           
+         → 175题做task stream（积累skill）                                                                                                                                                  
+         → 75题做test（评测）                                                                                                                                                               
+                                                                                                                                                                                            
+    每个任务类型都这样划分，保证test中各类型比例一致                                                                                                                                      
+                                                                                                                                                                                            
+  汇总                                                                                                                                                                                    
+                                                                                                                                                                                            
+  ┌──────────┬──────────────────────────┬──────────────────────┐                                                                                                                          
+  │ 数据集    │ Task Stream (积累skill)   │ Test (评测)           │                                                                                                                         
+  ├──────────┼──────────────────────────┼──────────────────────┤                                                                                                                            
+  │ MATH     │ train 7,500              │ test 5,000           │                                                                                                                            
+  │ ALFWorld │ train 3,553              │ test unseen 134      │                                                                                                                            
+  │ WebShop  │ train ~11,587            │ test 500             │                                                                                                                            
+  │ BBH      │ 自己划70% ≈ 4,558        │ 自己划30% ≈ 1,953    │                                                                                                                            
+  └──────────┴──────────────────────────┴──────────────────────┘ 
+
+
+
+
+  ### 先回答指标问题
+
+```
+EM Acc (Exact Match Accuracy):
+  模型输出的答案和标准答案做字符串匹配
+  完全一致 = 1，否则 = 0
+  报告所有题目的平均值
+  用于：BBH, MATH
+
+SR (Success Rate):
+  任务完成了 = 1，没完成 = 0
+  报告所有任务的平均值
+  用于：ALFWorld
+
+Avg Score + SR:
+  Avg Score = 每个任务的reward（0到1之间的连续值，属性匹配程度）
+  SR = reward恰好等于1.0的任务占比
+  两个都要报告
+  用于：WebShop
+```
+
+---
+
+### 模型选择
+
+你说得对，关键区别在于：**交互式任务需要agent能力，推理任务不需要。**
+
+但其实ALFWorld/WebShop的"工具调用"不是API层面的tool calling，而是**模型生成文本动作，由环境解析执行**：
+
+```
+ALFWorld:
+  模型输出: "go to countertop 1"     ← 就是一段文本
+  环境解析这段文本，执行动作，返回observation
+
+WebShop:
+  模型输出: "search[red pillow]"     ← 也是文本
+  环境解析，返回搜索结果页面
+
+不需要模型支持function calling，任何能生成文本的模型都行。
+```
+
+### 具体推荐
+
+**方案一：统一用一个API模型（最简单）**
+
+```
+GPT-4o-mini 或 Claude Sonnet
+  ✅ 四个数据集都能跑
+  ✅ 有足够的推理能力
+  ✅ 成本可控
+  ❌ API费用
+
+成本估算（粗略）：
+  ALFWorld: 134 test × ~15步 × ~1K tokens = ~2M tokens
+  WebShop:  500 test × ~10步 × ~1K tokens = ~5M tokens  
+  MATH:     5,000题 × ~1K tokens = ~5M tokens
+  BBH:      ~2,000题 × ~500 tokens = ~1M tokens
+  
+  加上task stream阶段的消耗，总共大概 50-100M tokens
+  GPT-4o-mini: ~$5-15
+  Claude Sonnet: ~$15-50
+```
+
+**方案二：开源模型本地跑（省钱，可复现）**
+
+```
+推荐：Qwen2.5-7B-Instruct 或 LLaMA-3.1-8B-Instruct
+
+  ✅ 免费
+  ✅ 完全可复现
+  ✅ SkillRL就是用Qwen2.5-7B跑的，有直接baseline对比
+  ❌ 需要GPU（1张A100或2张3090）
+  ❌ 能力弱于GPT-4，绝对SR会低一些
+
+用vLLM部署：
+  pip install vllm
+  vllm serve Qwen/Qwen2.5-7B-Instruct --port 8000
+  然后用OpenAI兼容API调用
+```
+
+**方案三：混合（推荐）**
+
+```
+主实验：Qwen2.5-7B-Instruct（和SkillRL对齐，公平对比）
+补充实验：GPT-4o-mini（证明框架在强模型上也有效）
+
+论文里写：
+  "We use Qwen2.5-7B-Instruct as the primary agent model, 
+   following SkillRL. We also validate with GPT-4o-mini 
+   to demonstrate model-agnostic effectiveness."
+```
+
+### 为什么推荐方案三
+
+| 考虑 | 理由 |
+|------|------|
+| 公平对比 | SkillRL用Qwen2.5-7B，你用同一个模型，差异只来自lifecycle管理 |
+| 成本 | 主实验本地跑免费，只有补充实验花API钱 |
+| 说服力 | 两个模型都有效 = 框架model-agnostic |
+| 弱模型更需要skill | 7B模型自身能力有限，skill的增益更明显 |
+
+**最后一点很关键：弱模型上skill的价值更大。** GPT-4自身能力很强，有没有skill差距可能不大；7B模型自身能力弱，好的skill bank能带来显著提升——这反而更能体现你框架的价值。
+
+
+
+
+
+## 完整测试流程
+
+### 总流程
+
+```
+阶段一：Task Stream（在train上积累skill bank）
+阶段二：Evaluation（在test上评测performance）
+阶段三：对比（和baseline对比，证明lifecycle有效）
+```
+
+### 具体步骤
+
+**以ALFWorld为例（其他三个同理）：**
+
+```
+═══════════════════════════════════════════════════════════
+阶段一：Task Stream — 在train 3,553个任务上积累skill bank
+═══════════════════════════════════════════════════════════
+
+Task 1 → Qwen2.5-7B作为agent，skill bank为空
+       → agent裸跑，生成trajectory
+       → 成功？→ 从trajectory提取skill → 进Staging
+       → 失败？→ 不提取
+
+Task 2 → agent检索skill bank（Staging降权参与）
+       → 生成trajectory
+       → 成功 + 有新pattern？→ 提取新skill
+       → 成功 + 无新pattern？→ 只更新已用skill的meta
+       → 更新Staging trial记录
+
+Task 3 → ...
+...
+
+Task N → Staging某skill试用通过 → promote到Active
+       → Active超预算 → 触发Compression（Merge/Distill）
+       → 某Active skill importance持续低 → 降级Archive
+       → ...lifecycle持续运行
+
+Task 3553 → skill bank最终状态形成
+
+每隔K个task（如每500个），保存当前skill bank的snapshot
+
+
+═══════════════════════════════════════════════════════════
+阶段二：Evaluation — 在test 134个任务上评测
+═══════════════════════════════════════════════════════════
+
+方式一：最终评测（简单）
+  拿阶段一结束后的skill bank
+  → 在134个test任务上跑
+  → 冻结skill bank（不再更新，只用不改）
+  → 报告SR
+
+方式二：过程评测（更有说服力，推荐）
+  每隔500个train task，用当前snapshot的skill bank在test上评测一次
+  → 画learning curve
+
+  SR
+  │
+  │                          ●━━━━●  Ours: 持续提升并稳定
+  │                    ●━━━●
+  │              ●━━━●           ○───○  Voyager: 先升后降
+  │        ●━━━●           ○─────
+  │   ●              ○────
+  │ ●          ○────
+  │      ○────
+  └──┬────┬────┬────┬────┬────┬────┬──→ train tasks consumed
+    0   500  1000 1500 2000 2500 3000
+
+
+═══════════════════════════════════════════════════════════
+阶段三：对比 — 和baseline比
+═══════════════════════════════════════════════════════════
+
+所有方法用相同的：
+  - 模型（Qwen2.5-7B）
+  - task stream顺序（同一个random seed）
+  - 评测集（test 134）
+
+  方法                Task Stream阶段           Evaluation
+  ─────────────────────────────────────────────────────────
+  No Skill            不积累                     裸跑
+  Voyager             只增不减                   用全量skill bank
+  FIFO                固定大小，先进先出          用最终skill bank
+  LRU                 固定大小，最近最少使用淘汰   用最终skill bank
+  Ours (Lifecycle)    完整框架                   用最终skill bank
+```
+
+### 四个数据集各自怎么跑
+
+```
+┌──────────┬────────────────────────┬───────────────────────┬───────────┐
+│ 数据集    │ 阶段一: Task Stream     │ 阶段二: Evaluation     │ Metric    │
+├──────────┼────────────────────────┼───────────────────────┼───────────┤
+│ ALFWorld │ train 3,553个任务       │ test 134个任务         │ SR        │
+│          │ 从trajectory提取skill  │ 每500个task评测一次     │           │
+├──────────┼────────────────────────┼───────────────────────┼───────────┤
+│ WebShop  │ train ~11,587条指令     │ test 500条指令         │ Avg+SR    │
+│          │ 从trajectory提取skill  │ 每2000个task评测一次    │           │
+├──────────┼────────────────────────┼───────────────────────┼───────────┤
+│ MATH     │ train 7,500题          │ test 5,000题          │ EM Acc    │
+│          │ 从CoT提取skill         │ 每1500题评测一次        │           │
+├──────────┼────────────────────────┼───────────────────────┼───────────┤
+│ BBH      │ 自划70% ≈ 4,558题     │ 自划30% ≈ 1,953题     │ EM Acc    │
+│          │ 从CoT提取skill         │ 每1000题评测一次        │           │
+└──────────┴────────────────────────┴───────────────────────┴───────────┘
+```
+
+### 额外要记录的东西
+
+除了最终performance，还要记录skill bank本身的变化：
+
+```
+每次评测时同时记录：
+  1. Active skill数量
+  2. Active总token数
+  3. Staging中待验证的skill数量
+  4. Archive中的skill数量
+  5. Forgotten中的skill数量
+  6. 累计触发Merge/Distill/Forgetting的次数
+  7. Skill利用率（被实际使用的Active skill占比）
+
+这些数据用来画skill bank dynamics图：
+
+  skill数量
+  │
+  │  Active ━━━━━━━━━━━━━━━━━  稳定在某个水平
+  │  
+  │  Archive ─ ─ ─ ─ ─ ─ ─     缓慢增长
+  │
+  │  Forgotten ···············  缓慢增长
+  │
+  └──────────────────────────→ train tasks consumed
+```
+
+### 每个seed跑一遍的完整成本
+
+```
+以ALFWorld + Qwen2.5-7B本地部署为例：
+
+阶段一：3,553个task × 平均15步 × 推理时间
+       ≈ 3,553 × 15 × 0.5秒 ≈ 7.4小时（单GPU）
+
+阶段二：每500个task评测一次 → 7次评测
+       每次134个task × 15步
+       ≈ 7 × 134 × 15 × 0.5秒 ≈ 2小时
+
+总计一个seed：~10小时
+5个seed × 6种方法（Ours + 5个baseline）：~300小时 ≈ 12.5天（单GPU）
+
+可以多方法并行跑（skill bank互不影响），4张GPU → ~3天
+```
+
+### 一句话总结
+
+```
+在train上边跑任务边积累skill → 定期在test上评测 → 和baseline对比learning curve和最终SR
+```
+
+
+
+
+## 测试集能否覆盖框架的所有模块
+
+### 逐模块检验
+
+```
+┌──────────────────┬────────────┬──────────────┬─────────────┬──────────────┐
+│ 框架模块          │ ALFWorld   │ WebShop      │ MATH        │ BBH          │
+├──────────────────┼────────────┼──────────────┼─────────────┼──────────────┤
+│ Acquisition      │ ✅ trajectory│ ✅ trajectory │ ✅ CoT       │ ✅ CoT        │
+│  Segmentation    │ ✅ 多步交互  │ ✅ 多步交互   │ ⚠️ 推理链切分 │ ⚠️ 推理链切分  │
+│  Alignment       │ ✅ 6类任务  │ ⚠️ 1类任务   │ ✅ 7类       │ ✅ 23类       │
+│  Formalization   │ ✅          │ ✅           │ ✅           │ ✅            │
+├──────────────────┼────────────┼──────────────┼─────────────┼──────────────┤
+│ Staging          │ ✅          │ ✅           │ ✅           │ ✅            │
+│  降权检索         │ ✅ 有检索   │ ✅ 有检索    │ ✅ 有检索    │ ✅ 有检索     │
+│  Trial记录       │ ✅          │ ✅           │ ✅           │ ✅            │
+│  Promote/Reject  │ ✅          │ ✅           │ ✅           │ ✅            │
+├──────────────────┼────────────┼──────────────┼─────────────┼──────────────┤
+│ Active           │ ✅          │ ✅           │ ✅           │ ✅            │
+│  Meta更新        │ ✅          │ ✅           │ ✅           │ ✅            │
+│  Compression     │            │              │             │              │
+│    Merge         │ ⚠️         │ ✅           │ ✅           │ ⚠️           │
+│    Distill       │ ✅          │ ✅           │ ✅           │ ✅            │
+│  Importance Score│ ✅          │ ✅           │ ✅           │ ✅            │
+├──────────────────┼────────────┼──────────────┼─────────────┼──────────────┤
+│ Archive          │ ⚠️         │ ⚠️          │ ✅           │ ✅            │
+│  召回            │ ⚠️         │ ⚠️          │ ✅           │ ✅            │
+├──────────────────┼────────────┼──────────────┼─────────────┼──────────────┤
+│ Forgotten        │ ⚠️         │ ⚠️          │ ✅           │ ✅            │
+│  去重检查         │ ⚠️         │ ⚠️          │ ✅           │ ✅            │
+└──────────────────┴────────────┴──────────────┴─────────────┴──────────────┘
+```
+
+### 有问题的模块逐个分析
+
+---
+
+**问题1：Alignment — WebShop只有1种任务类型**
+
+```
+Alignment需要"同类任务的多条trajectory"做对比。
+WebShop所有任务都是购物，skill之间区分度低。
+
+影响：Alignment可能把太多pattern都当作"共同的"
+解决：按商品类别（电子/服装/家居）聚类后，在类别内做Alignment
+      需要你自己给WebShop任务打类别标签（用LLM自动分类）
+```
+
+**问题2：Merge — ALFWorld和BBH的skill之间相似度低**
+
+```
+ALFWorld：6种任务的skill差异很大
+  "找物品→清洗→放置" 和 "找物品→加热→放置"
+  步骤结构相似但核心操作不同 → 其实可以merge为"找物品→{处理}→放置"
+  → 实际上能测到Merge，只是merge的机会不如WebShop/MATH多
+
+BBH：23种任务完全不同
+  "布尔逻辑"的skill和"日期理解"的skill毫无关系
+  → 跨类型merge几乎不会发生
+  → 但同类型内部（如logical_deduction的3/5/7 objects版本）可以merge
+  → Merge机会少，但不是零
+```
+
+**问题3：Archive和Forgotten — ALFWorld/WebShop数据量可能不够**
+
+```
+Archive需要：skill先进Active → 使用一段时间 → importance下降 → 降级
+Forgotten需要：在Archive待很久 → 再降级
+
+这需要足够长的task stream让skill经历完整生命周期。
+
+ALFWorld：3,553个train task
+  前1000个task：积累skill
+  中间1500个：skill正常使用
+  后1000个：如果任务分布变了，某些skill importance下降 → 触发Archive
+  → 勉强够，但比较紧
+
+WebShop：~11,587个train task → 足够
+
+MATH：7,500个train task → 足够
+
+BBH：4,558个task stream → 够用
+```
+
+**问题4：Archive召回 — 需要non-stationary才能测到**
+
+```
+Archive召回发生在：任务分布shift回来时
+
+如果task stream是随机shuffle的（均匀分布）：
+  → 所有类型的skill一直在被用
+  → importance不会大幅下降
+  → 很少触发Archive
+  → 更不会触发召回
+
+只有non-stationary实验（Phase轮换）才能充分测试Archive和Forgotten
+```
+
+---
+
+### 哪些实验测哪些模块
+
+```
+┌──────────────────────────────┬──────────────────────────────────────┐
+│ 框架模块                      │ 哪个实验能测到                        │
+├──────────────────────────────┼──────────────────────────────────────┤
+│ Acquisition (提取)            │ 所有实验都涉及                        │
+│ Staging (试用验证)             │ 实验2: Consolidation Ablation        │
+│ Active + Meta更新             │ 所有实验都涉及                        │
+│ Compression - Merge          │ 实验3: Compression Ablation (WebShop) │
+│ Compression - Distill        │ 实验3: Compression Ablation (WebShop) │
+│ Importance Score             │ 实验4: Forgetting策略对比 (ALFWorld)   │
+│ Forgetting (Active→Archive)  │ 实验4 + 实验6: Non-Stationary        │
+│ Archive召回                   │ 实验6: Non-Stationary（Phase 4回归）  │
+│ Forgotten去重                 │ 实验6: Non-Stationary（长任务流）      │
+│ 整体协同                      │ 实验5: 闭环 vs. 单机制                │
+│ Token预算                     │ 实验1: Scaling Analysis              │
+└──────────────────────────────┴──────────────────────────────────────┘
+```
+
+### 核心结论
+
+```
+能完整覆盖所有模块吗？
+
+  Acquisition → ✅ 四个数据集都能测
+  Staging     → ✅ 四个数据集都能测
+  Active      → ✅ 四个数据集都能测
+  Compression → ✅ WebShop和MATH最适合（skill间相似度高，merge机会多）
+  Archive     → ⚠️ 只有Non-Stationary实验能充分测到
+  Forgotten   → ⚠️ 只有Non-Stationary实验 + 足够长的task stream
+
+短板在Archive和Forgotten，必须依赖Non-Stationary实验。
+```
+
+### 所以Non-Stationary实验的设计至关重要
+
+```
+建议在ALFWorld和MATH上都做Non-Stationary：
+
+ALFWorld Non-Stationary (3,553 train tasks):
+  Phase 1 (0-888):     80% pick_and_place + 20% others
+  Phase 2 (889-1776):  80% pick_clean + 20% others
+  Phase 3 (1777-2664): 80% pick_heat + 20% others
+  Phase 4 (2665-3553): 80% pick_and_place（回归）← 测Archive召回
+
+MATH Non-Stationary (7,500 train tasks):
+  Phase 1 (0-1875):    80% Algebra + 20% others
+  Phase 2 (1876-3750): 80% Geometry + 20% others
+  Phase 3 (3751-5625): 80% Number Theory + 20% others
+  Phase 4 (5626-7500): 80% Algebra（回归）← 测Archive召回
+
+Phase 4回归是关键——如果Archive里的skill能被成功召回，
+performance恢复速度远快于重新学习。这是整个框架最强的selling point。
+```
+
+四个数据集组合起来可以覆盖所有模块，但**Non-Stationary实验是必做的**，否则Archive和Forgotten就只是纸上谈兵。

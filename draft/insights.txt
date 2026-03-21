@@ -1,0 +1,736 @@
+人类技能学习的生命周期：
+                                                                                                                                                                                        
+新学一个技能 → 反复练习巩固 → 抽象出核心要领 → 不用的逐渐遗忘                                                                                                                             
+(Staging)      (Consolidation)    (Compression)      (Forgetting)                                                                                                                       
+                                                                                                                                                                                        
+Skill bank应该模拟这个过程，而不是"只进不出的仓库"。                                                                                                                                      
+                                                                                                                                                                                        
+---                                                                                                                                                                                       
+一、Skill States（技能状态机）                                                                                                                                                          
+                                                                                                                                                                                        
+                    验证成功(N次)          使用频率下降
+┌──────────┐    ──────────→   ┌──────────┐   ──────────→   ┌──────────┐                                                                                                                 
+│ Staging  │                  │  Active   │                 │ Archive  │                                                                                                                
+│ (候选区)  │    ←──────────   │  (活跃区)  │   ←──────────   │ (归档区)  │                                                                                                             
+└──────────┘    验证失败/冲突   └──────────┘   被重新调用      └──────────┘                                                                                                             
+        │                             │                             │                                                                                                                      
+        │ 多次失败                     │ 触发merge                    │ 长期未用                                                                                                           
+        ↓                             ↓                             ↓                                                                                                                      
+┌──────────┐                 ┌──────────┐                 ┌──────────┐                                                                                                                  
+│ Rejected │                 │ Composed  │                 │ Forgotten │                                                                                                                
+│  (淘汰)   │                 │ (合并态)   │                 │  (遗忘)   │                                                                                                            
+└──────────┘                 └──────────┘                 └──────────┘      
+
+
+
+如何进入skill states？
+
+用具体的Experience Distillation设计
+
+  Step 1: Trajectory Segmentation
+
+  将成功trajectory切分为有意义的片段。
+
+  完整trajectory T = [a1, a2, a3, ..., an]
+
+  切分策略: 基于subgoal boundary detection
+    Segment 1: [a1, a2, a3]     → "导航到目标页面"
+    Segment 2: [a4, a5]         → "提取关键信息"
+    Segment 3: [a6, a7, a8, a9] → "填写并提交表单"
+
+  怎么找boundary？ 两种方案：
+
+  ┌────────────────────┬──────────────────────────────────────────────────┬─────────────────────┐
+  │        方案        │                       做法                       │      适用场景       │
+  ├────────────────────┼──────────────────────────────────────────────────┼─────────────────────┤
+  │ LLM-based          │ 让LLM判断"这里完成了一个子目标吗"                │ 通用，但开销大      │
+  ├────────────────────┼──────────────────────────────────────────────────┼─────────────────────┤
+  │ State-change-based │ 观察环境状态的显著变化点（页面跳转、新元素出现） │ Web/GUI任务，更高效 │
+  └────────────────────┴──────────────────────────────────────────────────┴─────────────────────┘
+
+  建议用state-change做粗切 + LLM做细分，平衡效率和质量。
+
+  Step 2: Cross-Trajectory Alignment
+
+  单条trajectory中提取的片段可能是偶然的。需要跨trajectory验证复现性。
+
+  Task类型A的10条成功trajectory:
+    T1: [..., 排序, 选第一个, ...]
+    T2: [..., 排序, 选第一个, ...]
+    T3: [..., 筛选, 选最便宜, ...]   ← 不同策略
+    T4: [..., 排序, 选第一个, ...]
+    ...
+
+  "排序→选第一个" 出现 7/10次 → 高复现性 → 候选skill
+  "筛选→选最便宜" 出现 3/10次 → 低复现性 → 暂不提取
+
+  复现性阈值： 在同类task的M条trajectory中出现 ≥ r% 才提取。
+
+  这一步自然地过滤了很多低质量/偶然成功的pattern，减轻了consolidation的压力。
+
+  Step 3: Skill Formalization
+
+  将通过alignment验证的片段，让LLM泛化为通用skill描述。
+
+  输入 (具体片段):
+    "在Booking.com上点击'Price (lowest first)'按钮，
+     然后选择列表中第一个酒店"
+
+  LLM泛化输出:
+    {
+      "name": "sort_and_select_optimal",
+      "description": "在列表页中按指定指标排序，选择排序后的第一个结果",
+      "precondition": "当前页面有可排序的列表",
+      "parameters": ["sort_metric"],
+      "steps": ["找到排序控件", "选择目标排序指标", "等待列表刷新", "选择第一个结果"],
+      "source": "experience_distillation",
+      "confidence": 0.7   // 7/10 trajectory复现
+    }
+
+  注意confidence字段——直接传递给staging area，影响consolidation的试用期长度。复现率越高，初始confidence越高，试用期可以越短。
+
+  ---
+  与Lifecycle的衔接点
+
+  Successful Trajectories
+          │
+          ▼
+    ┌─────────────┐
+    │ Segmentation │  ← 切分
+    └──────┬──────┘
+           ▼
+    ┌─────────────┐
+    │  Alignment  │  ← 跨trajectory验证（第一道过滤）
+    └──────┬──────┘
+           ▼
+    ┌──────────────┐
+    │Formalization │  ← 泛化为通用skill + 标注confidence
+    └──────┬───────┘
+           ▼
+    ┌──────────────┐
+    │ Staging Area │  ← 进入lifecycle
+    │ (confidence  │     consolidation根据confidence调整试用期
+    │  from align) │     高confidence → 短试用期
+    └──────────────┘     低confidence → 长试用期
+
+  这个设计的好处：
+  1. Alignment阶段已经做了第一道质量过滤（复现性），不是什么都往staging塞
+  2. Confidence信息传递给consolidation，实现差异化验证
+  3. 和Voyager/SAGE用的是同类方法，但加了alignment和confidence，可以公平对比
+
+
+
+
+
+Staging Area 运作流程
+
+  数据结构
+
+  @dataclass
+  class StagingSkill:
+      skill: Skill                      # skill本体
+      confidence: float                 # alignment初始置信度
+      trial_budget: int                 # 需要被试用的总次数
+      trial_results: List[bool]         # 试用记录
+      inactive_rounds: int              # 连续多少轮没被选中
+      max_inactive: int                 # 最大允许不活跃轮数
+
+  检索机制
+
+  Agent接到任务 → 检索整个skill bank（Active + Staging）
+
+  ranking公式：
+    Score = relevance × priority_weight
+
+    Active skill:  priority_weight = 1.0
+    Staging skill: priority_weight = α    (α ∈ [0.2, 0.5], 可调超参)
+
+  Staging skill始终参与检索，只是天然排名靠后。只有当它和任务高度相关时才可能被选中。
+
+  完整流程
+
+                      ┌──────────────────────┐
+                      │  新skill从Acquisition │
+                      │  进入Staging Area     │
+                      └──────────┬───────────┘
+                                 │
+                                 ▼
+                      ┌──────────────────────┐
+                 ┌───│  参与检索（降权排名）   │───┐
+                 │   └──────────────────────┘   │
+                 │                               │
+            被Agent选中                       未被选中
+                 │                               │
+                 ▼                               ▼
+        ┌─────────────────┐           ┌──────────────────┐
+        │ 执行并记录结果    │           │ inactive_rounds += 1│
+        │ trial_results    │           └────────┬─────────┘
+        │   .append(成功/失败)│                    │
+        └────────┬────────┘                    │
+                 │                               │
+                 ▼                               ▼
+        ┌─────────────────┐          ┌───────────────────────┐
+        │ 试用次数够了？     │          │ inactive_rounds        │
+        │ len(results)     │          │   ≥ max_inactive ?     │
+        │   ≥ trial_budget?│          └────────┬──────────────┘
+        └───┬─────────┬───┘                   │
+            │         │                    Yes │  No
+           Yes        No                      │   │
+            │         │                       ▼   └→ 继续留在Staging
+            │         └→ 继续留在               │      等待下一轮检索
+            │            Staging               │
+            ▼                                  ▼
+    ┌──────────────────┐              ┌──────────────┐
+    │ 评估试用结果       │              │   Reject     │
+    │                   │              │  (没人需要)   │
+    │ success_rate      │              └──────────────┘
+    │ = 成功次数/总次数   │
+    └───┬──────────┬───┘
+        │          │
+    ≥ threshold  < threshold
+        │          │
+        ▼          ▼
+   ┌─────────┐  ┌──────────┐
+   │ Promote  │  │  Reject  │
+   │ → Active │  │  (质量差) │
+   └─────────┘  └──────────┘
+
+  三种结局
+
+  ┌────────────────────┬────────────────────────────────────────┬────────────────────────┐
+  │        结局        │                触发条件                │          含义          │
+  ├────────────────────┼────────────────────────────────────────┼────────────────────────┤
+  │ Promote → Active   │ 试用够次数 且 success_rate ≥ threshold │ 质量验证通过，正式上岗 │
+  ├────────────────────┼────────────────────────────────────────┼────────────────────────┤
+  │ Reject（质量差）   │ 试用够次数 但 success_rate < threshold │ 有人用但效果不好       │
+  ├────────────────────┼────────────────────────────────────────┼────────────────────────┤
+  │ Reject（没人需要） │ 连续max_inactive轮都没被选中           │ 跟现有任务不相关       │
+  └────────────────────┴────────────────────────────────────────┴────────────────────────┘
+
+
+
+
+Active Area 运作流程
+  数据结构
+                                                                                                                                                                                            
+  @dataclass
+  class ActiveSkill:                                                                                                                                                                        
+      skill: Skill                      # skill本体                                                                                                                                         
+      meta: SkillMeta                   # 运行时统计信息                                                                                                                                    
+      compressed: bool                  # 是否已被压缩过                                                                                                                                    
+      version: int                      # 版本号（每次compression +1）                                                                                                                      
+                                                                                                                                                                                            
+  @dataclass                                                                                                                                                                                
+  class SkillMeta:                                                                                                                                                                          
+      call_count: int                   # 总调用次数                                                                                                                                        
+      success_count: int                # 成功次数                                                                                                                                          
+      success_rate: float               # 成功率                                                                                                                                            
+      last_used_at: int                 # 最近一次使用的round                                                                                                                               
+      avg_reward: float                 # 平均task reward                                                                                                                                   
+      token_cost: int                   # 占用token数                                                                                                                                       
+      similarity_neighbors: List[str]   # 语义相似的skill ids                                                                                                                               
+                                                                                                                                                                                            
+  Active Area的职责                                                                                                                                                                         
+                                                                                                                                                                                            
+  和Staging不同，Active是skill bank的核心工作区：                                                                                                                                           
+                                                                                                                                                                                          
+  ┌──────────┬───────────────────┬─────────────────────────┐                                                                                                                                
+  │   维度   │      Staging      │         Active          │                                                                                                                              
+  ├──────────┼───────────────────┼─────────────────────────┤                                                                                                                                
+  │ 检索权重 │ 降权(α=0.2~0.5)   │ 满权(1.0)               │                                                                                                                              
+  ├──────────┼───────────────────┼─────────────────────────┤
+  │ 目的     │ 验证skill有没有用 │ 让agent用skill完成任务  │                                                                                                                                
+  ├──────────┼───────────────────┼─────────────────────────┤                                                                                                                                
+  │ 关注指标 │ 能不能pass试用    │ 长期使用表现 + 规模控制 │                                                                                                                                
+  └──────────┴───────────────────┴─────────────────────────┘                                                                                                                                
+                                                                                                                                                                                          
+  Active Area内发生三件事                                                                                                                                                                   
+                                                                                                                                                                                          
+  ┌─────────────────────────────────────────────────────────┐                                                                                                                               
+  │                      Active Area                         │                                                                                                                            
+  │                                                          │                                                                                                                              
+  │   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+  │   │  ① 正常使用   │  │ ② Compression │  │ ③ 降级判定   │  │                                                                                                                             
+  │   │  持续更新meta │  │  控制规模      │  │  触发Forgetting│ │                                                                                                                           
+  │   └──────────────┘  └──────────────┘  └──────────────┘  │                                                                                                                               
+  └─────────────────────────────────────────────────────────┘                                                                                                                               
+                                                                                                                                                                                            
+  ---                                                                                                                                                                                       
+  ① 正常使用：持续更新meta                                                                                                                                                                
+                          
+  每次agent执行任务，检索并使用Active skill后，更新统计：
+                                                                                                                                                                                            
+  Agent接到任务
+    → 检索Active skills（权重1.0）+ Staging skills（降权）                                                                                                                                  
+    → 选中Active skill S                                                                                                                                                                    
+    → 执行任务                                                                                                                                                                              
+    → 记录结果                                                                                                                                                                              
+                                                                                                                                                                                            
+  更新S的meta：                                                                                                                                                                             
+    call_count += 1                                                                                                                                                                       
+    success_count += (1 if 成功 else 0)                                                                                                                                                     
+    success_rate = success_count / call_count                                                                                                                                               
+    last_used_at = current_round
+    avg_reward = running_average(reward)                                                                                                                                                    
+                                                                                                                                                                                          
+  这些meta数据是后续Compression和Forgetting决策的依据。                                                                                                                                     
+                                                                                                                                                                                          
+  ---                                                                                                                                                                                       
+  ② Compression：控制Active Area规模                                                                                                                                                      
+                                                                                                                                                                                            
+  触发条件（任一满足即触发）：
+                                                                                                                                                                                            
+  ┌──────────────────────────────┬────────────────────────────────────────────┐                                                                                                             
+  │           触发条件           │                  检测方式                  │                                                                                                             
+  ├──────────────────────────────┼────────────────────────────────────────────┤                                                                                                             
+  │ Active skill总token超过预算  │ sum(s.token_cost for s in active) > budget │                                                                                                           
+  ├──────────────────────────────┼────────────────────────────────────────────┤                                                                                                             
+  │ 新skill从Staging promote进来 │ 每次promote后检查                          │                                                                                                             
+  ├──────────────────────────────┼────────────────────────────────────────────┤                                                                                                             
+  │ 定期维护                     │ 每N轮执行一次                              │                                                                                                             
+  └──────────────────────────────┴────────────────────────────────────────────┘                                                                                                             
+                                                                                                                                                                                          
+  Compression做两件事：                                                                                                                                                                     
+                                                                                                                                                                                          
+  事件a：发现相似skill → Merge                                                                                                                                                              
+                                                                                                                                                                                          
+  定期扫描Active skills之间的相似度                                                                                                                                                         
+                                                                                                                                                                                            
+  发现：
+    Skill A: "在Amazon搜索商品并排序"    sim=0.87                                                                                                                                           
+    Skill B: "在eBay搜索商品并排序"       ↗                                                                                                                                                 
+                                                                                                                                                                                            
+  sim > τ_merge(如0.8) → 触发merge                                                                                                                                                          
+                                                                                                                                                                                            
+  合并为：                                                                                                                                                                                  
+    Skill C: "在{platform}搜索商品并排序"                                                                                                                                                 
+    - A标记为composed, 从Active移除                                                                                                                                                         
+    - B标记为composed, 从Active移除                                                                                                                                                         
+    - C进入Active, parent_ids = [A, B]                                                                                                                                                      
+                                                                                                                                                                                            
+  事件b：单个skill描述过长 → Distill                                                                                                                                                        
+                                                                                                                                                                                            
+  Skill D的token_cost = 350 tokens（过长）                                                                                                                                                  
+                                                                                                                                                                                            
+  LLM精炼：                                                                                                                                                                                 
+    保留核心步骤，去除冗余描述                                                                                                                                                              
+    350 tokens → 120 tokens                                                                                                                                                                 
+                                                                                                                                                                                            
+  更新：                                                                                                                                                                                    
+    D.token_cost = 120                                                                                                                                                                      
+    D.compressed = True                                                                                                                                                                   
+    D.version += 1                                                                                                                                                                          
+                                                                                                                                                                                            
+  完整Compression流程：                                                                                                                                                                     
+                                                                                                                                                                                            
+  触发Compression                                                                                                                                                                         
+         │                                                                                                                                                                                  
+         ▼                                                                                                                                                                                  
+  ┌─────────────────────┐                                                                                                                                                                   
+  │ 扫描相似度矩阵        │                                                                                                                                                                 
+  │ 找所有 sim > τ_merge  │                                                                                                                                                                 
+  │ 的skill pair         │                                                                                                                                                                  
+  └──────────┬──────────┘                                                                                                                                                                   
+             │                                                                                                                                                                              
+       有相似pair ──→ Merge → 减少skill数量                                                                                                                                                 
+             │                                                                                                                                                                              
+       没有   │
+             ▼                                                                                                                                                                              
+  ┌─────────────────────┐                                                                                                                                                                 
+  │ 仍然超预算？          │
+  │ total_tokens > budget│                                                                                                                                                                  
+  └──────┬──────────┬───┘                                                                                                                                                                   
+         │          │                                                                                                                                                                       
+        Yes         No → 结束                                                                                                                                                               
+         │                                                                                                                                                                                  
+         ▼                                                                                                                                                                                
+  ┌─────────────────────┐                                                                                                                                                                   
+  │ 按token_cost降序     │                                                                                                                                                                
+  │ 对最长的skill做Distill │
+  │ 直到总token ≤ budget  │                                                                                                                                                                 
+  └─────────────────────┘
+                                                                                                                                                                                            
+  ---                                                                                                                                                                                     
+  ③ 降级判定：触发Forgetting                                                                                                                                                                
+                                                                                                                                                                                          
+  每轮结束后，计算每个Active skill的importance score：
+                                                                                                                                                                                            
+  $$I(s, t) = w_1 \cdot \text{Recency} + w_2 \cdot \text{Frequency} + w_3 \cdot \text{Quality} + w_4 \cdot \text{Irreplaceability}$$                                                        
+                                                                                                                                                                                            
+  Recency:        exp(-λ × (current_round - last_used_at))                                                                                                                                  
+                  越久没用 → 越低                                                                                                                                                           
+                                                                                                                                                                                            
+  Frequency:      log(1 + call_count)                                                                                                                                                       
+                  用得越多 → 越高                                                                                                                                                           
+                                                                                                                                                                                          
+  Quality:        success_rate × avg_reward
+                  成功率和收益越高 → 越高
+                                                                                                                                                                                            
+  Irreplaceability: 1 - max(sim(s, s') for s' in Active, s'≠s)                                                                                                                              
+                    替代品越少 → 越高                                                                                                                                                       
+                                                                                                                                                                                            
+  降级决策：                                                                                                                                                                              
+
+  每轮检查所有Active skill的importance score
+                                                                                                                                                                                            
+  if I(s, t) < θ_archive:          ← 低于归档阈值                                                                                                                                           
+      连续低于θ_archive达T1轮？                                                                                                                                                             
+          Yes → 降级到Archive                                                                                                                                                               
+          No  → 暂不动，继续观察                                                                                                                                                            
+                                                                                                                                                                                            
+  一个具体例子：                                                                                                                                                                            
+                                                                                                                                                                                            
+  Skill "用Selenium截网页长图"                                                                                                                                                              
+                                                                                                                                                                                            
+  Round 1-20:  经常被用，importance = 0.85  ← 正常                                                                                                                                          
+  Round 21-50: 任务类型变了，不再需要截图                                                                                                                                                   
+               last_used_at停在round 20                                                                                                                                                     
+               Recency持续衰减                                                                                                                                                            
+               importance: 0.85 → 0.6 → 0.4 → 0.25                                                                                                                                          
+                                                                                                                                                                                            
+  Round 45: importance = 0.25 < θ_archive(0.3)  ← 第一次低于阈值                                                                                                                            
+  Round 46-50: 持续低于阈值，连续5轮                                                                                                                                                        
+                                                                                                                                                                                            
+  Round 50: 连续低于阈值达T1=5轮 → 降级到Archive                                                                                                                                            
+            - 压缩为精简版本存入Archive                                                                                                                                                     
+            - 从Active移除                                                                                                                                                                  
+            - 如果未来又有截图任务，可以从Archive召回                                                                                                                                     
+                                                                                                                                                                                            
+  ---                                                                                                                                                                                     
+  Active Area全景图                                                                                                                                                                         
+                                                                                                                                                                                            
+          Staging Promote进来
+                 │                                                                                                                                                                          
+                 ▼                                                                                                                                                                        
+  ┌──────────────────────────────────────────────┐
+  │                 Active Area                    │                                                                                                                                        
+  │                                                │
+  │  ┌──────────┐  ┌──────────┐  ┌──────────┐    │                                                                                                                                          
+  │  │ Skill A  │  │ Skill B  │  │ Skill C  │... │                                                                                                                                          
+  │  │ meta:... │  │ meta:... │  │ meta:... │    │                                                                                                                                          
+  │  └──────────┘  └──────────┘  └──────────┘    │                                                                                                                                          
+  │       │              │              │          │                                                                                                                                        
+  │       └──────┬───────┴──────┬──────┘          │                                                                                                                                       
+  │              │              │                  │                                                                                                                                        
+  │         每轮更新meta    定期/事件触发            │                                                                                                                                    
+  │              │              │                  │                                                                                                                                        
+  │              ▼              ▼                  │                                                                                                                                      
+  │     ┌──────────────┐ ┌───────────────┐        │                                                                                                                                         
+  │     │ Importance   │ │ Compression   │        │                                                                                                                                         
+  │     │ Score计算     │ │ Merge/Distill │        │                                                                                                                                        
+  │     └──────┬───────┘ └───────────────┘        │                                                                                                                                         
+  │            │                                   │                                                                                                                                      
+  │    I < θ_archive                               │                                                                                                                                        
+  │    连续T1轮                                     │                                                                                                                                       
+  │            │                                   │
+  │            ▼                                   │                                                                                                                                        
+  │     降级到Archive                               │                                                                                                                                       
+  └──────────────────────────────────────────────┘
+
+
+
+   Archive Area 运作流程                                                                                                                                                                     
+                                                                                                                                                                                            
+  定位                                                                                                                                                                                      
+                                                                                                                                                                                            
+  Archive只存放曾经在Active中验证过有价值、但当前不再活跃的skill。                                                                                                                          
+                                                                                                                                                                                            
+  唯一入口：Active降级                                                                                                                                                                      
+  唯一出口：召回到Active 或 降级到Forgotten                                                                                                                                                 
+                                                                                                                                                                                            
+  数据结构                                                                                                                                                                                  
+                                                                                                                                                                                            
+  @dataclass                                                                                                                                                                                
+  class ArchivedSkill:
+      skill_summary: str                # 压缩后的skill描述                                                                                                                                 
+      original_skill_id: str            # 指向原始完整版本（用于召回恢复）                                                                                                                  
+      archived_at: int                  # 归档时的round                                                                                                                                     
+      last_used_at: int                 # 归档前最后一次使用的round                                                                                                                         
+      recall_count: int                 # 被召回并成功的次数                                                                                                                                
+      inactive_rounds: int              # 归档后连续未被选中的轮数                                                                                                                          
+                                                                                                                                                                                            
+  进入Archive                                                                                                                                                                               
+                                                                                                                                                                                          
+  Active skill的importance < θ_archive 连续T1轮                                                                                                                                             
+         │                                                                                                                                                                                
+         ▼
+  ┌─────────────────────────┐
+  │ 压缩skill描述            │                                                                                                                                                              
+  │   完整版(300 tokens)     │
+  │   → 精简版(80 tokens)    │                                                                                                                                                              
+  │                          │                                                                                                                                                            
+  │ 保留原始完整版本的引用     │                                                                                                                                                            
+  │   → 召回时可恢复          │                                                                                                                                                             
+  └────────────┬────────────┘
+               │                                                                                                                                                                            
+               ▼                                                                                                                                                                          
+          进入Archive                                                                                                                                                                       
+                                                                                                                                                                                          
+  检索机制
+
+  Agent接到任务 → 检索skill bank
+                                                                                                                                                                                            
+    Active skills    权重 = 1.0
+    Archive skills   权重 = β (0.05~0.15)                                                                                                                                                   
+                                                                                                                                                                                            
+  正常情况下Active skill排在前面                                                                                                                                                            
+  只有Active中找不到好的匹配时，Archive skill才可能被选中                                                                                                                                   
+                                                                                                                                                                                            
+  被选中后：召回流程                                                                                                                                                                      
+                                                                                                                                                                                            
+  Agent检索命中Archive skill S                                                                                                                                                            
+         │                                                                                                                                                                                  
+         ▼
+    恢复S的完整版本                                                                                                                                                                         
+         │                                                                                                                                                                                
+         ▼
+    用完整版本执行任务
+         │
+         ▼
+    记录结果                                                                                                                                                                                
+         │
+    ┌────┴────┐                                                                                                                                                                             
+    │         │                                                                                                                                                                           
+   成功      失败
+    │         │                                                                                                                                                                             
+    ▼         ▼
+  recall     留在Archive                                                                                                                                                                    
+  count += 1  inactive_rounds重置为0                                                                                                                                                        
+    │                                                                                                                                                                                       
+    ▼                                                                                                                                                                                       
+  recall_count ≥ R ?                                                                                                                                                                        
+    │                                                                                                                                                                                     
+  ┌─┴──┐
+  Yes   No
+  │     │                                                                                                                                                                                   
+  ▼     ▼
+  Promote   留在Archive                                                                                                                                                                     
+  回Active   等待下次                                                                                                                                                                     
+  (重置meta)                                                                                                                                                                                
+                                                                                                                                                                                          
+  为什么需要多次成功（R次）才能回Active？                                                                                                                                                   
+                                                                                                                                                                                          
+  和Staging逻辑一致——防止偶然成功。一个skill很久没用了，环境可能已经变了，需要多次验证它确实还能用。                                                                                        
+                                                                                                                                                                                          
+  清理：通向Forgotten                                                                                                                                                                       
+                                                                                                                                                                                          
+  Archive skill长期无人问津
+                                                                                                                                                                                            
+  if inactive_rounds ≥ max_archive_inactive:    # 如50轮
+      → 降级到Forgotten                                                                                                                                                                     
+      → 只保留 {skill_id, name, 一句话摘要}                                                                                                                                                 
+      → 不再参与任何检索
+                                                                                                                                                                                            
+  完整流程图                                                                                                                                                                              
+                                                                                                                                                                                            
+            从Active降级（唯一入口）                                                                                                                                                      
+                      │                                                                                                                                                                     
+                      ▼
+           ┌──────────────────┐                                                                                                                                                             
+           │  压缩并存入Archive │                                                                                                                                                           
+           └────────┬─────────┘                                                                                                                                                             
+                    │                                                                                                                                                                       
+                    ▼                                                                                                                                                                       
+           ┌──────────────────┐                                                                                                                                                             
+      ┌────│ 参与检索(低权重β) │────┐
+      │    └──────────────────┘    │                                                                                                                                                        
+      │                            │                                                                                                                                                      
+  被选中                        未被选中                                                                                                                                                    
+      │                            │
+      ▼                            ▼                                                                                                                                                        
+   召回完整版本              inactive_rounds += 1                                                                                                                                         
+   执行任务                        │                                                                                                                                                        
+      │                            │
+   成功 → recall_count += 1   ≥ max_archive_inactive?                                                                                                                                       
+   失败 → 留在Archive              │                                                                                                                                                        
+      │                       Yes  │  No
+      │                        │   └→ 继续等待                                                                                                                                              
+  recall_count ≥ R?            │                                                                                                                                                          
+      │                        ▼                                                                                                                                                            
+    Yes → Promote回Active   Forgotten                                                                                                                                                       
+    No  → 留在Archive       (只留摘要,不检索)                                                                                                                                               
+                                                                                                                                                                                            
+  一个完整例子                                                                                                                                                                            
+                                                                                                                                                                                            
+  Round 1-30:   Skill "用Selenium截网页长图" 在Active，经常使用                                                                                                                           
+                                                                                                                                                                                            
+  Round 31-55:  任务类型变化，不再需要截图
+                importance持续衰减                                                                                                                                                          
+                Round 55: 连续低于θ_archive达T1轮                                                                                                                                           
+                → 压缩: 300 tokens → 80 tokens                                                                                                                                              
+                → 进入Archive                                                                                                                                                               
+                                                                                                                                                                                            
+  Round 56-80:  在Archive中，偶尔参与检索但未被选中                                                                                                                                         
+                inactive_rounds: 1, 2, ... 25                                                                                                                                             
+                                                                                                                                                                                            
+  Round 81:     来了截图任务，Active中无匹配                                                                                                                                                
+                Archive中该skill被命中                                                                                                                                                      
+                → 召回完整版 → 执行 → 成功                                                                                                                                                  
+                recall_count = 1, inactive_rounds = 0                                                                                                                                       
+                                                                                                                                                                                            
+  Round 88:     又来截图任务 → 召回 → 成功                                                                                                                                                  
+                recall_count = 2 ≥ R(2)                                                                                                                                                     
+                → Promote回Active，重置meta                                                                                                                                                 
+   
+  如果Round 81之后再也没来截图任务：                                                                                                                                                        
+                inactive_rounds继续累加                                                                                                                                                   
+                到达max_archive_inactive(50轮)                                                                                                                                              
+                → 降级到Forgotten   
+
+
+
+
+
+
+ Forgotten Area 运作流程                                                                                                                                                                   
+                                                                                                                                                                                            
+  定位                                                                                                                                                                                      
+                                                                                                                                                                                            
+  Skill生命周期的终点站。                                                                                                                                                                   
+                                                                                                                                                                                            
+  唯一入口：Archive降级（连续max_archive_inactive轮无人问津）                                                                                                                               
+                                                                                                                                                                                            
+  数据结构
+                                                                                                                                                                                            
+  极度精简，几乎不占空间：                                                                                                                                                                  
+   
+  @dataclass                                                                                                                                                                                
+  class ForgottenSkill:                                                                                                                                                                   
+      skill_id: str                     # 唯一标识
+      name: str                         # 技能名称                                                                                                                                          
+      summary: str                      # 一句话摘要（如"用Selenium截网页长图"）
+      forgotten_at: int                 # 遗忘时的round                                                                                                                                     
+                                                                                                                                                                                          
+  注意：没有完整描述，没有步骤，没有代码。 只留一个"我曾经会过这个"的记忆痕迹。                                                                                                             
+                                                                                                                                                                                          
+  和Archive的关键区别                                                                                                                                                                       
+                                                                                                                                                                                          
+  ┌──────────┬──────────────────────────┬──────────────────────┐                                                                                                                            
+  │          │         Archive          │      Forgotten       │                                                                                                                          
+  ├──────────┼──────────────────────────┼──────────────────────┤
+  │ 存储内容 │ 压缩版skill + 完整版引用 │ 只有名字和一句话摘要 │
+  ├──────────┼──────────────────────────┼──────────────────────┤
+  │ 参与检索 │ 是（低权重β）            │ 不参与               │                                                                                                                            
+  ├──────────┼──────────────────────────┼──────────────────────┤
+  │ 能否恢复 │ 能，召回完整版           │ 不能直接恢复         │                                                                                                                            
+  ├──────────┼──────────────────────────┼──────────────────────┤                                                                                                                            
+  │ 占用空间 │ 中等                     │ 极小                 │
+  └──────────┴──────────────────────────┴──────────────────────┘                                                                                                                            
+                                                                                                                                                                                          
+  那Forgotten还有什么用？                                                                                                                                                                   
+                                                                                                                                                                                          
+  它唯一的作用：防止重复学习。                                                                                                                                                              
+                                                                                                                                                                                          
+  没有Forgotten记录的情况：                                                                                                                                                                 
+                                                                                                                                                                                            
+    Round 100: Agent从trajectory中提取了skill "用Selenium截网页长图"                                                                                                                        
+    Round 200: 这个skill经过Active → Archive → 被彻底删除                                                                                                                                   
+    Round 300: Agent又从trajectory中提取了同样的skill                                                                                                                                       
+               → 重新走一遍Staging试用流程                                                                                                                                                  
+               → 浪费                                                                                                                                                                       
+                                                                                                                                                                                            
+  有Forgotten记录的情况：                                                                                                                                                                   
+                                                                                                                                                                                            
+    Round 300: Agent提取了skill "用Selenium截网页长图"                                                                                                                                      
+               → 进入Staging前，先查Forgotten列表                                                                                                                                         
+               → 发现：这个skill以前学过，最终被遗忘了                                                                                                                                      
+               → 说明它在当前任务分布下大概率没用                                                                                                                                           
+               → 直接跳过，不进入Staging                                                                                                                                                    
+                                                                                                                                                                                            
+  完整流程                                                                                                                                                                                  
+                                                                                                                                                                                          
+         从Archive降级（唯一入口）                                                                                                                                                          
+                   │                                                                                                                                                                      
+                   ▼
+        ┌─────────────────────┐                                                                                                                                                             
+        │ 丢弃完整版本和压缩版  │
+        │ 只保留:               │                                                                                                                                                           
+        │   skill_id           │                                                                                                                                                            
+        │   name               │                                                                                                                                                            
+        │   summary (一句话)    │                                                                                                                                                           
+        └──────────┬──────────┘                                                                                                                                                             
+                   │
+                   ▼                                                                                                                                                                        
+        ┌─────────────────────┐                                                                                                                                                           
+        │    Forgotten Pool    │
+        │                      │                                                                                                                                                            
+        │  不参与检索            │
+        │  唯一用途：            │                                                                                                                                                          
+        │  新skill进Staging前   │                                                                                                                                                           
+        │  做去重检查            │                                                                                                                                                          
+        └─────────────────────┘                                                                                                                                                             
+                                                                                                                                                                                            
+  去重检查的逻辑                                                                                                                                                                            
+   
+  新skill准备进入Staging                                                                                                                                                                    
+           │                                                                                                                                                                              
+           ▼
+    和Forgotten Pool做相似度匹配
+    sim(new_skill.name, forgotten.name)                                                                                                                                                     
+           │                                                                                                                                                                                
+      ┌────┴────┐                                                                                                                                                                           
+      │         │                                                                                                                                                                           
+   sim > τ    sim ≤ τ                                                                                                                                                                       
+      │         │                                                                                                                                                                           
+      ▼         ▼                                                                                                                                                                           
+    跳过       正常进入Staging                                                                                                                                                              
+   (曾经学过    (全新skill)                                                                                                                                                                 
+    已被淘汰)                                                                                                                                                                               
+                                                                                                                                                                                            
+  但有一个例外： 如果任务分布已经明显变化了，曾经没用的skill可能现在有用了。                                                                                                                
+                                                                                                                                                                                            
+  新skill和Forgotten中的某个skill相似                                                                                                                                                       
+           │                                                                                                                                                                                
+           ▼
+    检查：forgotten_at距今多久？                                                                                                                                                            
+           │                                                                                                                                                                                
+      ┌────┴────┐                                                                                                                                                                           
+      │         │                                                                                                                                                                           
+   较近        很久以前                                                                                                                                                                     
+   (< D轮)     (≥ D轮)                                                                                                                                                                      
+      │         │
+      ▼         ▼                                                                                                                                                                           
+    跳过       允许进入Staging                                                                                                                                                              
+   (最近才淘汰  (任务分布可能已经变了                                                                                                                                                       
+    大概率还没用) 值得重新试试)                                                                                                                                                             
+                                                                                                                                                                                            
+  一个完整例子                                                                                                                                                                              
+                                                                                                                                                                                            
+  Round 55:    Skill "用Selenium截网页长图" 从Active降级到Archive                                                                                                                         
+  Round 105:   在Archive中50轮无人问津 → 降级到Forgotten                                                                                                                                    
+               Forgotten Pool中记录:                                                                                                                                                        
+                 {id: "sk_017", name: "截网页长图", summary: "用Selenium截取完整网页截图"}                                                                                                  
+                                                                                                                                                                                            
+  Round 150:   Agent从新trajectory中提取了 "用Playwright截网页长图"                                                                                                                         
+               → 进Staging前查Forgotten Pool                                                                                                                                                
+               → 匹配到 "截网页长图" (sim > τ)                                                                                                                                              
+               → forgotten_at = Round 105, 距今45轮 < D(100轮)                                                                                                                            
+               → 跳过，不进Staging                                                                                                                                                          
+                                                                                                                                                                                            
+  Round 300:   Agent又提取了类似skill                                                                                                                                                       
+               → 查Forgotten Pool                                                                                                                                                           
+               → forgotten_at = Round 105, 距今195轮 ≥ D(100轮)                                                                                                                             
+               → 时间够久了，任务分布可能变了                                                                                                                                               
+               → 允许进入Staging重新试用   
+
+
+
+  ┌────────────┬──────────────────┬───────────────┬───────────────┬──────────┬────────────────────────┐                                                                                     
+  │ Benchmark  │       类型       │    任务数     │   任务类别    │ 搭建难度 │ Skill/Memory paper用过 │                                                                                     
+  ├────────────┼──────────────────┼───────────────┼───────────────┼──────────┼────────────────────────┤                                                                                     
+  │ ALFWorld   │ 家居交互         │ 134           │ 6种           │ 容易     │ SkillRL, SAGE, MemP    │                                                                                   
+  ├────────────┼──────────────────┼───────────────┼───────────────┼──────────┼────────────────────────┤
+  │ WebShop    │ 电商购物         │ 500           │ 1种(按商品分) │ 中等     │ SkillRL, Agent-R1      │                                                                                     
+  ├────────────┼──────────────────┼───────────────┼───────────────┼──────────┼────────────────────────┤                                                                                     
+  │ AppWorld   │ 多App API调用    │ 750           │ 9个App        │ 中等     │ SAGE, TIMA             │                                                                                     
+  ├────────────┼──────────────────┼───────────────┼───────────────┼──────────┼────────────────────────┤                                                                                     
+  │ SWE-bench  │ GitHub issue修复 │ 500(verified) │ 12个repo      │ 中等     │ 代码agent              │                                                                                   
+  ├────────────┼──────────────────┼───────────────┼───────────────┼──────────┼────────────────────────┤                                                                                     
+  │ WebArena   │ 真实网页操作     │ 812           │ 4个域         │ 难       │ BrowserGym系           │                                                                                   
+  ├────────────┼──────────────────┼───────────────┼───────────────┼──────────┼────────────────────────┤                                                                                     
+  │ Mind2Web   │ 网页导航         │ 2,350         │ 31个域        │ 中等     │ 网页agent              │                                                                                   
+  ├────────────┼──────────────────┼───────────────┼───────────────┼──────────┼────────────────────────┤                                                                                     
+  │ OSWorld    │ 桌面OS操作       │ 369           │ 跨应用        │ 难       │ Computer-use           │                                                                                   
+  ├────────────┼──────────────────┼───────────────┼───────────────┼──────────┼────────────────────────┤                                                                                     
+  │ AgentBench │ 8种环境混合      │ 多种          │ 8类           │ 难       │ 通用评测               │                                                                                   
+  └────────────┴──────────────────┴───────────────┴───────────────┴──────────┴────────────────────────┘

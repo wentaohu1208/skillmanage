@@ -1,0 +1,378 @@
+================================================================================
+                    可复用/参考的开源代码库调研
+================================================================================
+
+
+================================================================================
+一、Top 5 最值得参考的仓库
+================================================================================
+
+  优先级   仓库         Stars   复用什么
+  ──────────────────────────────────────────────────────────────────
+  ⭐⭐⭐   SkillRL      472     Skill数据结构、双模式检索、失败驱动evolution
+  ⭐⭐⭐   Voyager      6,756   ChromaDB存储、skill检索API、add/retrieve模式
+  ⭐⭐     AutoSkill    175     Lifecycle状态机、混合检索、版本管理
+  ⭐⭐     ExpeL        208     成功/失败双池、insight提取(ADD/EDIT/REMOVE)
+  ⭐       MemEngine    107     模块化架构(Store/Recall/Reflect/Optimize)
+
+
+================================================================================
+二、各仓库详细分析
+================================================================================
+
+
+--------------------------------------------------------------------------------
+1. SkillRL — github.com/aiming-lab/SkillRL
+   Stars: 472 | 语言: Python
+   依赖: Azure OpenAI, SentenceTransformers (Qwen3-Embedding-0.6B), GRPO trainer
+--------------------------------------------------------------------------------
+
+  关键文件：
+    agent_system/memory/skills_only_memory.py  → Skill bank + 双模式检索
+    agent_system/memory/skill_updater.py       → LLM驱动的skill演化（失败分析）
+    memory_data/search/claude_style_skills_search.json → Skill bank JSON格式
+    skill_generation/alfworld.py, search.py, webshop.py → 领域skill生成
+
+  Skill数据结构：
+    {
+      "general_skills": [
+        {"skill_id": "gen_001", "title": "...", "principle": "...", "when_to_apply": "..."}
+      ],
+      "task_specific_skills": {
+        "pick_and_place": [...],
+        "clean": [...]
+      },
+      "common_mistakes": [
+        {"description": "...", "how_to_avoid": "..."}
+      ]
+    }
+
+  检索方式：
+    模式1: keyword/template匹配（按task类型，零延迟）
+    模式2: semantic embedding（SentenceTransformer + cosine similarity排序）
+    动态skill（dyn_前缀）始终包含在检索结果中
+
+  Skill演化：
+    SkillUpdater分析失败trajectory
+    → LLM生成1-3个新skill
+    → 分配唯一dyn_NNN ID防止冲突
+    → 验证必要字段（skill_id, title, principle, when_to_apply）
+
+  可复用部分：
+    ✅ 双模式检索（template + embedding）
+    ✅ Skill JSON schema
+    ✅ 动态ID管理
+    ✅ 失败驱动的evolution pipeline
+    ✅ ALFWorld/WebShop的环境集成代码
+
+
+--------------------------------------------------------------------------------
+2. Voyager — github.com/MineDojo/Voyager
+   Stars: 6,756 | 语言: Python + JavaScript
+   依赖: ChromaDB, OpenAI, LangChain
+--------------------------------------------------------------------------------
+
+  关键文件：
+    voyager/agents/skill.py              → SkillManager类（核心）
+    voyager/voyager.py                   → 主agent loop
+    skill_library/trial1/skill/code/*.js → 存储的skill代码文件
+    skill_library/trial1/skill/description/*.txt → Skill描述
+
+  存储架构（三层同步）：
+    层1: 内存dict {program_name: {"code": ..., "description": ...}}
+    层2: 文件系统 code/*.js + description/*.txt + skills.json索引
+    层3: 向量库 ChromaDB + OpenAI embeddings at skill/vectordb/
+
+  检索：
+    ChromaDB的similarity_search_with_score(query, k=k)
+    用OpenAI embeddings编码task描述
+    返回top-k skill代码
+
+  添加skill：
+    LLM从代码生成description
+    → 处理重复：同名skill自动版本化（V2, V3...）
+    → 同步更新三层存储
+
+  可复用部分：
+    ✅ SkillManager的add/retrieve API设计
+    ✅ ChromaDB集成模式（正式部署时参考）
+    ✅ 内存dict + JSON dump（实验阶段参考）
+    ✅ 版本化命名处理重复
+
+
+--------------------------------------------------------------------------------
+3. AutoSkill — github.com/ECNU-ICALK/AutoSkill
+   Stars: 175 | 语言: Python
+   依赖: LLM APIs, YAML configs, BM25
+--------------------------------------------------------------------------------
+
+  关键文件：
+    AutoSkill4Doc/models.py              → 数据模型(SkillDraft, SkillSpec, SkillLifecycle)
+    AutoSkill4Doc/store/registry.py      → 文件系统存储(DocumentRegistry)
+    AutoSkill4Doc/store/retrieval.py     → 混合检索(BM25 + vector + boost)
+    AutoSkill4Doc/store/versioning.py    → 语义版本管理
+    AutoSkill4Doc/stages/merge.py        → Merge实现
+    AutoSkill4Doc/stages/extractor.py    → Skill提取
+    AutoSkill4Doc/stages/compiler.py     → Skill编译
+    SkillBank/                           → 预构建的SKILL.md文件集合
+
+  Lifecycle状态机：
+    candidate → draft → evaluating → active → watchlist → deprecated → retired
+    每次状态转换记录为SkillLifecycle事件
+
+  检索（最精细的实现）：
+    score = 0.1 × BM25词汇匹配
+          + 0.9 × vector dot-product相似度
+          + 0.15 (if 匹配asset type)
+          + 0.15 (if 匹配node ID)
+    最低token overlap门槛过滤
+
+  存储：
+    文件系统JSON registry
+    URL编码的skill ID
+    manifest索引
+    provenance追踪 + change logs
+
+  可复用部分：
+    ✅ Lifecycle状态机（扩展为我们的Active→Archive→Forgotten）
+    ✅ 混合检索（BM25 + vector + domain boost）
+    ✅ SkillSpec数据模型 + 语义版本管理
+    ✅ Merge实现（stages/merge.py）
+    ✅ 文件系统registry模式
+
+
+--------------------------------------------------------------------------------
+4. ExpeL — github.com/LeapLabTHU/ExpeL
+   Stars: 208 | 语言: Python
+   依赖: OpenAI, LangChain, FAISS
+--------------------------------------------------------------------------------
+
+  关键文件：
+    agent/expel.py          → ExpeL agent（经验管理 + insight检索）
+    memory/episode.py       → Trajectory类（切分后的经验）
+    insight_extraction.py   → 规则提取pipeline(ADD/EDIT/REMOVE)
+    agent/react.py          → 基础ReAct agent
+    agent/reflect.py        → 反思agent
+
+  经验池（双池设计）：
+    succeeded_trial_history: Dict[str, Trajectory]  → 成功轨迹
+    failed_trial_history: Dict[str, Trajectory]     → 失败轨迹
+    每个Trajectory: observations, actions, thoughts的并行列表 + embedding key
+
+  Insight/规则管理：
+    LLM通过对比成功vs失败轨迹提取规则
+    四种操作：
+      ADD    → 新增规则
+      EDIT   → 修改已有规则
+      REMOVE → 删除错误规则
+      AGREE  → 已有规则的计数器+1
+    规则按AGREE计数器排序（频率越高越靠前）
+
+  检索：
+    多策略轮换：task相似度、thought匹配、action/step匹配
+    按cosine distance, trajectory长度, thought embeddings重排序
+
+  可复用部分：
+    ✅ 成功/失败双池（对应我们的成功提取steps + 失败提取warnings）
+    ✅ Insight提取的ADD/EDIT/REMOVE/AGREE + 计数器（对应confidence）
+    ✅ 对比成功vs失败的critique模式
+    ✅ Trajectory数据结构
+
+  和我们框架的对应：
+    ExpeL的insight ≈ 我们的skill
+    ExpeL的ADD ≈ 我们的Acquisition
+    ExpeL的REMOVE ≈ 我们的Forgetting
+    ExpeL的AGREE计数器 ≈ 我们的confidence
+
+
+--------------------------------------------------------------------------------
+5. MemEngine — github.com/nuster1128/MemEngine
+   Stars: 107 | 语言: Python
+   依赖: 可配置的LLM backends和embedding模型
+   发表: TheWebConf 2025 Oral
+--------------------------------------------------------------------------------
+
+  关键文件：
+    memengine/memory/BaseMemory.py       → 抽象基类: reset/store/recall/manage/optimize
+    memengine/operation/Store.py         → 8种存储实现
+    memengine/operation/Recall.py        → 8种检索策略
+    memengine/function/Forget.py         → 遗忘模块
+    memengine/function/Encoder.py        → 编码模块
+    memengine/function/Judge.py          → 判断模块
+    memengine/function/Retrieval.py      → 检索模块
+    memengine/function/Reflector.py      → 反思模块
+    memengine/function/Summarizer.py     → 摘要模块
+    memengine/function/Trigger.py        → 触发模块
+    memengine/function/Truncation.py     → 截断模块
+
+  架构：
+    Memory类型: ExplicitMemory, ImplicitMemory
+    操作: Store, Recall, Reflect, Optimize
+    功能模块: Encoder, Forget, Judge, Retrieval, Reflector, Summarizer, Trigger, Truncation
+    全部config驱动: DefaultFunctionConfig, DefaultMemoryConfig
+
+  Memory类型：
+    FUMemory  → 全量存储
+    STMemory  → 短期/基于时间
+    LTMemory  → 长期/基于语义
+    GAMemory  → Generative Agents式（含importance scoring）
+    MBMemory  → 层次化摘要
+    MTMemory  → 树结构（embedding相似度）
+
+  可复用部分：
+    ✅ 模块化架构（BaseMemory + pluggable operations + functions）
+    ✅ Store/Recall/Reflect/Optimize操作分类
+    ✅ Forget模块（遗忘策略）
+    ✅ Config驱动设计
+    ✅ GAMemory的importance scoring（类似我们的Importance Score）
+
+
+================================================================================
+三、辅助参考仓库
+================================================================================
+
+
+--------------------------------------------------------------------------------
+6. Buffer of Thoughts — github.com/YangLing0818/buffer-of-thought-llm
+   Stars: 675 | NeurIPS 2024 Spotlight
+--------------------------------------------------------------------------------
+
+  关键文件：
+    bot_pipeline.py     → 三阶段pipeline: distill → retrieve template → instantiate
+    meta_buffer.py      → MetaBuffer类（用LightRAG存储thought templates）
+
+  核心逻辑：
+    存储: LightRAG (hybrid RAG) 的 rag.insert(thought_template)
+    检索: rag.query(input, param=QueryParam(mode="hybrid"))
+    去重: dynamic_update()用LLM判断新template是否novel，novel才插入
+
+  可复用: 新skill插入时的novelty去重检查模式
+
+
+--------------------------------------------------------------------------------
+7. A-MEM — github.com/agiresearch/A-mem
+   Stars: 925 | Zettelkasten式记忆
+--------------------------------------------------------------------------------
+
+  关键文件：
+    agentic_memory/memory_system.py → AgenticMemorySystem类
+
+  MemoryNote结构：
+    UUID id, content, keywords, context, tags,
+    links(关联note IDs), creation_timestamp,
+    last_access_time, retrieval_count, evolution_history
+
+  Zettelkasten实现：
+    add_note() → 创建note → 找最多5个相关memory → LLM决定演化动作
+    演化动作: "strengthen"(加links/更新tags) 或 "update_neighbor"(修改邻居)
+    定期consolidate_memories()重建ChromaDB索引
+
+  检索: search_agentic() → ChromaDB检索 → 沿links扩展到邻居notes
+
+  可复用: skill之间的link关系、演化历史、网络发现检索
+
+
+--------------------------------------------------------------------------------
+8. ReAct — github.com/ysymyth/ReAct
+   Stars: 3,669 | ICLR 2023
+--------------------------------------------------------------------------------
+
+  关键文件：
+    alfworld.ipynb   → ALFWorld agent loop
+    WebShop.ipynb    → WebShop agent loop
+    wikienv.py       → 环境接口
+
+  Agent loop: Think → Act → Observe循环，基于prompt，无持久化skill
+
+  可复用: ALFWorld和WebShop的环境交互模式（我们的执行层参考）
+
+
+--------------------------------------------------------------------------------
+9. SAGE — github.com/amazon-science/SAGE
+   Stars: 4 | Amazon Science
+--------------------------------------------------------------------------------
+
+  关键文件：
+    sage/llm_agent/generation.py       → Agent生成 + skill集成
+    sage/llm_agent/app_world/          → AppWorld环境集成
+    sage/verl/trainer/ppo/             → GRPO训练 + skill-integrated reward
+
+  架构: 重基础设施(Megatron + vLLM)，skill = agent生成的可调用函数
+
+  可复用: skill = generated function的概念，GRPO + skill-integrated reward
+
+
+--------------------------------------------------------------------------------
+10. AgentBoard — github.com/hkust-nlp/AgentBoard
+    Stars: 401 | NeurIPS 2024 Oral
+--------------------------------------------------------------------------------
+
+  覆盖: 9种任务, 1013个环境
+  包含: ALFWorld, ScienceWorld, BabyAI, Jericho, PDDL, WebShop, WebArena等
+  指标: success rate + progress rate(子目标完成度)
+
+  可复用: 多环境评测框架
+
+
+================================================================================
+四、复用策略总结
+================================================================================
+
+  我们框架的各模块 → 参考哪个仓库的哪个文件
+
+  ┌──────────────────────┬─────────────────────────────────────────────┐
+  │ 我们的模块            │ 参考来源                                     │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ 环境交互层            │ ReAct (alfworld.ipynb, WebShop.ipynb)       │
+  │ (ALFWorld/WebShop)   │ SkillRL (agent_system/environments/)        │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ Skill数据结构         │ SkillRL (skills_only_memory.py的JSON格式)   │
+  │                      │ 扩展：加warnings字段 + lifecycle meta        │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ Skill存储（实验）     │ Voyager (内存dict + JSON dump)              │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ Skill存储（正式）     │ Voyager (ChromaDB + JSON + 文件系统)        │
+  │                      │ AutoSkill (文件系统registry)                 │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ Skill检索             │ SkillRL (双模式: template + embedding)      │
+  │                      │ AutoSkill (混合: BM25 + vector + boost)     │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ Acquisition（提取）   │ ExpeL (insight extraction pipeline)         │
+  │                      │ SkillRL (failure analysis → skill update)   │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ 失败学习（warnings）  │ SkillRL (common_mistakes + skill_updater)   │
+  │                      │ ExpeL (failed_trial_history + critique)     │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ Compression (Merge)  │ AutoSkill (stages/merge.py)                 │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ Compression (Distill)│ Buffer of Thoughts (novelty gating思路)     │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ Forgetting           │ MemEngine (function/Forget.py)              │
+  │                      │ AutoSkill (lifecycle: deprecated→retired)   │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ Archive/Recall       │ AutoSkill (watchlist→active状态转换)        │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ Forgotten（去重）     │ Buffer of Thoughts (novelty gating)        │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ Importance Score     │ MemEngine (GAMemory importance scoring)     │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ 整体架构             │ MemEngine (BaseMemory + pluggable ops)      │
+  ├──────────────────────┼─────────────────────────────────────────────┤
+  │ 评测框架             │ AgentBoard (多环境统一评测)                   │
+  └──────────────────────┴─────────────────────────────────────────────┘
+
+
+================================================================================
+五、GitHub链接汇总
+================================================================================
+
+  SkillRL:          https://github.com/aiming-lab/SkillRL
+  Voyager:          https://github.com/MineDojo/Voyager
+  AutoSkill:        https://github.com/ECNU-ICALK/AutoSkill
+  ExpeL:            https://github.com/LeapLabTHU/ExpeL
+  MemEngine:        https://github.com/nuster1128/MemEngine
+  Buffer of Thoughts: https://github.com/YangLing0818/buffer-of-thought-llm
+  A-MEM:            https://github.com/agiresearch/A-mem
+  ReAct:            https://github.com/ysymyth/ReAct
+  SAGE:             https://github.com/amazon-science/SAGE
+  AgentBoard:       https://github.com/hkust-nlp/AgentBoard

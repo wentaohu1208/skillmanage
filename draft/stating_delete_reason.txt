@@ -1,0 +1,254 @@
+我推荐这个简化设计
+
+  原来：Acquisition → Staging（参与检索试用）→ Active
+  现在：Acquisition（增量式，自带confidence验证）→ 直接进Active
+
+  Acquisition已经做了质量过滤：
+    1. 只收集成功trajectory    ← 第一道过滤
+    2. Alignment要复现率 ≥ r   ← 第二道过滤
+    3. confidence持续更新       ← 第三道过滤（增量式的优势）
+
+  三道过滤之后，进Active的skill质量已经有保障了。
+  Staging的试用验证变成了多余的环节。
+
+  这样Skill Bank就很清晰
+
+  ┌─────────────────────────────────────────────────────┐
+  │                   Skill Bank = Active                 │
+  │                                                       │
+  │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐               │
+  │  │Skill1│ │Skill2│ │Skill3│ │Skill4│ ...            │
+  │  └──────┘ └──────┘ └──────┘ └──────┘               │
+  │                                                       │
+  │  总token ≤ budget                                     │
+  │  检索权重 = 1.0                                       │
+  │  有Compression（Merge + Distill）控制规模              │
+  │  有Forgetting（降级到Archive）淘汰低importance skill   │
+  └─────────────────────────────────────────────────────┘
+           ↑                              │
+      Acquisition                  importance低
+      (增量式，自带                  连续T1轮
+       confidence验证)                    │
+                                          ▼
+                                  ┌──────────────┐
+                                  │   Archive    │
+                                  │  不参与检索    │
+                                  │  可被召回      │
+                                  └──────┬───────┘
+                                         │
+                                    长期无人召回
+                                         │
+                                         ▼
+                                  ┌──────────────┐
+                                  │  Forgotten   │
+                                  │  不参与检索    │
+                                  │  只做去重      │
+                                  └──────────────┘
+
+  瘦身体现在哪
+
+  对比Voyager：
+    Voyager: 所有成功trajectory的skill都进bank → 只增不减 → 膨胀
+    你:      经过三道过滤才进Active + token预算 + Compression + Forgetting
+
+    Voyager跑3000个task后: skill bank可能有500+个skill
+    你跑3000个task后:       Active中可能只有30-50个skill
+
+    瘦身在：
+    1. 入口瘦身：增量式Acquisition三道过滤（成功率、复现率、confidence稳定性）
+    2. 存量瘦身：Compression（Merge减数量、Distill减token）
+    3. 淘汰瘦身：Forgetting（importance低的降级到Archive）
+    4. 预算瘦身：token总量不超过budget
+
+  更新后的状态机
+
+                  Acquisition
+                  (三道过滤后)
+                      │
+                      ▼
+    ┌──────────────────────────────────────┐
+    │           SKILL BANK (Active)         │
+    │                                        │
+    │   检索权重: 1.0                        │
+    │   token ≤ budget                       │
+    │   Compression控制规模                   │
+    │   Importance Score监控每个skill         │
+    └──────────┬───────────────────────┬────┘
+               │                       │
+          importance低            被召回成功R次
+          连续T1轮                      ↑
+               │                       │
+               ▼                       │
+    ┌──────────────────┐               │
+    │     Archive      │───────────────┘
+    │  不参与检索       │
+    │  压缩存储         │
+    │  可被主动召回      │
+    └────────┬─────────┘
+             │
+        长期无人召回
+             │
+             ▼
+    ┌──────────────────┐
+    │    Forgotten     │
+    │  不参与检索       │
+    │  只留名字做去重    │
+    └──────────────────┘
+
+  这样Staging就去掉了。Skill Bank = Active，概念清晰，瘦身明确。
+
+
+为什么说Staging多余了
+
+  回忆一下Staging原来的作用：
+
+  原来的Staging：
+    skill进来 → 试用几次 → 看成功率 → 决定要不要留
+
+  本质就是：验证这个skill到底有没有用
+
+  但增量式Acquisition已经做了这件事。
+
+  看看Acquisition的三道过滤具体在干什么：
+
+  第一道：只收集成功trajectory
+
+    agent用某种方式完成了任务 → 成功了 → 才收集
+    失败的trajectory不收集
+    → 保证了原材料本身是"有效的行为"
+
+  第二道：Alignment要复现率 ≥ r
+
+    不是出现1次就提取
+    而是同类任务中反复出现（至少3次，复现率≥50%）才提取
+    → 保证了这个pattern不是偶然的
+
+  第三道：confidence持续更新
+
+    提取后，每来一条新记录，confidence还在更新
+    如果后续记录不再出现这个pattern → confidence持续下降
+    → 保证了这个pattern是持久有效的
+
+  这三道加起来，已经回答了"这个skill到底有没有用"这个问题。
+
+  再看Staging在干什么：
+
+  Staging的试用：
+    skill进Staging → agent遇到相关任务 → 用这个skill → 成功/失败 → 记录
+
+  这不就是在问同一个问题吗？"这个skill有没有用"
+
+  但Acquisition已经用了3-5条成功记录验证过了
+  Staging再验证一遍，重复了
+
+  一个具体例子
+
+  Acquisition阶段：
+    5条Algebra Level 3成功记录中，"因式分解"出现了4次
+    confidence = 4/5 = 0.8
+    → 提取为skill
+
+  如果还有Staging：
+    skill进入Staging
+    → 等agent遇到Algebra Level 3的题
+    → 用这个skill试
+    → 成功了3/4次
+    → success_rate = 0.75 ≥ threshold
+    → promote到Active
+
+  你发现了吗？Staging做的事和Acquisition做的事一模一样：
+    Acquisition: 4/5条记录中出现 → 有效
+    Staging:     3/4次试用成功 → 有效
+
+  结论一样，但多花了时间和API调用
+
+  所以简化为
+
+  原来：
+    Acquisition提取 → Staging试用验证 → Active
+    （验证了两遍）
+
+  现在：
+    Acquisition提取（自带验证）→ 直接进Active
+    （验证一遍就够）
+
+  但如果你觉得不放心
+
+  可以加一个轻量级的保护机制，不用完整的Staging：
+
+  新skill进Active后，标记为 "probation"（观察期）
+
+    前K次使用中：
+      success_rate ≥ 0.5 → 正式留下，去掉probation标记
+      success_rate < 0.3 → 直接移除
+
+    不需要单独的Staging区域
+    不需要降权检索
+    就是进Active后多观察几次
+
+  这比完整的Staging简单得多，但也提供了一层保护。
+
+❯ 有个问题,我过训练集的时候的顺序,会影响我最后的skill bank里面有哪些,如果顺序不一样,有的skill很久没遇到pattern了就消失了                                                                    
+
+⏺ 对，这就是你之前提到的shuffle问题。但现在去掉了Staging，问题更清晰了。
+
+  问题在哪
+
+  顺序A: 先100道Algebra → 再100道Geometry → 再100道Number Theory
+
+    Algebra阶段：积累了"因式分解"等skill，confidence稳定
+    Geometry阶段：Algebra skill的importance持续下降
+                 → 降级到Archive
+                 → 甚至降到Forgotten
+    Number Theory阶段：又有一些Algebra相关pattern出现
+                 → 但Forgotten去重把它挡住了！
+                 → 或者Archive里的skill已经被遗忘了
+
+  顺序B: Algebra/Geometry/Number Theory交替出现
+
+    每种类型都持续有记录进来
+    所有skill的importance都维持在合理水平
+    不会有skill被错误淘汰
+
+  同样的数据，顺序A和顺序B最终的skill bank可能完全不同。
+
+  但这其实不是bug，是feature
+
+  想想人类：
+
+    一个人先学了3年数学，然后转行做3年设计，再转行做3年编程
+    → 数学技能大部分遗忘了
+
+    另一个人数学/设计/编程交替学习
+    → 三种技能都保持
+
+    两个人的"技能库"当然不一样
+    这不是问题，这是skill bank在适应不同的经历
+
+  Lifecycle框架的目标不是"保留所有可能有用的skill"，而是"保留当前最有用的skill"。 不同顺序导致不同的skill bank，是框架在做它该做的事。
+
+  真正的问题是：最终test performance会不会因此差很多
+
+  这才是你需要关心的。
+
+  如果不同顺序导致：
+    顺序A: test SR = 0.78
+    顺序B: test SR = 0.80
+    顺序C: test SR = 0.76
+
+    方差很小 → 框架对顺序鲁棒 → 好
+    方差很大 → 框架对顺序敏感 → 需要改进
+
+  怎么验证和应对
+
+  验证：就是你之前说的多seed shuffle
+
+  跑5个不同的random seed
+  报告 mean ± std
+
+    Ours:    SR = 0.78 ± 0.02  ← std小，鲁棒
+    Voyager: SR = 0.72 ± 0.05  ← std大，不鲁棒
+
+  如果你的std比Voyager小，这反而是一个优势：lifecycle框架更鲁棒。
+
+  为什么可能更鲁棒？因为Archive机制、
