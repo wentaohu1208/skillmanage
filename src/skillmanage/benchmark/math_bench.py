@@ -74,7 +74,15 @@ class MathBenchmark(Benchmark):
 
         for subject in self._subjects:
             logger.info("Loading MATH/%s/%s", subject, split)
-            ds = load_dataset(self._dataset_name, subject, split=split)
+            # Support local path (no network) or HuggingFace hub name
+            try:
+                ds = load_dataset(self._dataset_name, subject, split=split)
+            except Exception:
+                # Fallback: try loading as local directory
+                import os
+                local_path = os.path.join(self._dataset_name, subject)
+                logger.info("HuggingFace hub failed, trying local: %s", local_path)
+                ds = load_dataset(local_path, split=split)
 
             for example in ds:
                 level_str = example["level"]  # e.g., "Level 5"
