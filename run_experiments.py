@@ -48,6 +48,7 @@ QWEN_MODEL = "Qwen2.5-7B-Instruct"
 
 # Experiment settings
 MATH_DATA_PATH = os.environ.get("MATH_DATA_PATH", "/data/hwt/hf_data/math")
+DEBUG = False  # Set by --debug flag
 SUBJECT = "geometry"
 LEVELS = [4, 5]
 NUM_TRAIN = None   # None = full (geometry L4: 177 train, L5: 421 train = 598 total)
@@ -99,6 +100,31 @@ def load_all_tasks():
 # ---------------------------------------------------------------------------
 
 
+def _log_debug(task, result, pred):
+    """Log detailed debug info for a wrong answer."""
+    from skillmanage.benchmark.math_bench import extract_boxed_answer, _pre_normalize
+    gt = task.ground_truth
+    logger.info("=" * 40 + " DEBUG " + "=" * 40)
+    logger.info("Task ID:    %s", task.task_id)
+    logger.info("Task Type:  %s", task.task_type)
+    logger.info("Problem:    %s", task.instruction[:200])
+    logger.info("GT (raw):   %r", gt)
+    logger.info("Pred (raw): %r", pred)
+    logger.info("GT (norm):  %r", _pre_normalize(gt))
+    logger.info("Pred (norm):%r", _pre_normalize(pred))
+    try:
+        from math_verify import parse as mv_parse, verify as mv_verify
+        gt_parsed = mv_parse(_pre_normalize(gt))
+        pred_parsed = mv_parse(_pre_normalize(pred))
+        logger.info("GT parsed:  %s", gt_parsed)
+        logger.info("Pred parsed:%s", pred_parsed)
+        logger.info("Verify:     %s", mv_verify(gt_parsed, pred_parsed))
+    except Exception as e:
+        logger.info("math-verify error: %s", e)
+    logger.info("Agent output (last 300 chars):\n%s", result.agent_answer[-300:])
+    logger.info("=" * 87)
+
+
 def run_no_skill(model_name: str, llm_client, bench, train_tasks, test_tasks, output_dir: str) -> dict:
     """Run without skill bank (pure LLM baseline)."""
     from skillmanage.benchmark.base import TaskResult
@@ -130,6 +156,8 @@ def run_no_skill(model_name: str, llm_client, bench, train_tasks, test_tasks, ou
             status = "OK" if result.success else "X"
             logger.info("[%s no-skill] Train %d/%d %s | pred=%s gt=%s",
                         model_name, i+1, len(train_tasks), status, pred[:20], task.ground_truth[:20])
+            if DEBUG and not result.success:
+                _log_debug(task, result, pred)
         except Exception as e:
             logger.error("[%s no-skill] Train %d FAILED: %s", model_name, i+1, e)
 
@@ -143,6 +171,8 @@ def run_no_skill(model_name: str, llm_client, bench, train_tasks, test_tasks, ou
             status = "OK" if result.success else "X"
             logger.info("[%s no-skill] Test %d/%d %s | pred=%s gt=%s",
                         model_name, i+1, len(test_tasks), status, pred[:20], task.ground_truth[:20])
+            if DEBUG and not result.success:
+                _log_debug(task, result, pred)
         except Exception as e:
             logger.error("[%s no-skill] Test %d FAILED: %s", model_name, i+1, e)
 
@@ -217,6 +247,8 @@ def run_with_skill(model_name: str, llm_client, embedding_model, bench, train_ta
                         model_name, i+1, len(train_tasks), status,
                         pred[:20], task.ground_truth[:20],
                         stats["active"], stats["archive"])
+            if DEBUG and not result.success:
+                _log_debug(task, result, pred)
         except Exception as e:
             logger.error("[%s skill] Train %d FAILED: %s", model_name, i+1, e)
 
@@ -350,7 +382,14 @@ def main():
     parser = argparse.ArgumentParser(description="Geometry L4-L5 experiments")
     parser.add_argument("--exp", type=str, default="all",
                         help="1/2/3/4/ds/qwen/all")
+    parser.add_argument("--debug", action="store_true",
+                        help="Show detailed debug info for wrong answers")
     args = parser.parse_args()
+
+    global DEBUG
+    DEBUG = args.debug
+    if DEBUG:
+        logger.info("DEBUG mode ON: will log detailed info for wrong answers")
 
     os.makedirs(OUTPUT_BASE, exist_ok=True)
 
