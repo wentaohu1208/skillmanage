@@ -70,7 +70,7 @@ def create_llm_client(api_key: str, base_url: str, model: str):
         api_key=api_key,
         model_name=model,
         temperature=0.0,
-        max_tokens=2048,
+        max_tokens=4096,
     )
 
 
@@ -221,7 +221,7 @@ def run_with_skill(model_name: str, llm_client, embedding_model, bench, train_ta
     cfg = SkillManageConfig(
         retrieval=RetrievalConfig(top_k=3, similarity_threshold=0.3, token_budget=2000),
         storage_dir=output_dir,
-        checkpoint_interval=50,
+        checkpoint_interval=1,
     )
 
     skill_bank = SkillBank(embedding_dim=1024)

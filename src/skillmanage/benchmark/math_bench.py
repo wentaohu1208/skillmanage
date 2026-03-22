@@ -295,27 +295,44 @@ def is_equiv(predicted: str, ground_truth: str) -> bool:
 def _pre_normalize(s: str) -> str:
     """Light normalization before passing to math-verify.
 
-    Fixes formatting issues that math-verify can't handle,
-    e.g. '(18,-18)' -> '(18, -18)'.
+    Fixes formatting issues that math-verify can't handle.
     """
-    # Normalize comma spacing for tuples: "(18,-18)" -> "(18, -18)"
-    # Only add space when comma is followed by minus sign (not for "1,000,000")
-    s = re.sub(r",\s*(?=-)", ", ", s)
+    # Normalize comma spacing for tuples: "(1,4)" -> "(1, 4)"
+    s = s.replace(",", ", ")
+    # Fix double spaces from above
     s = " ".join(s.split())
+    # Fix number-letter concatenation: "289\pi" -> "289\\pi", "4\pi" -> "4\\pi"
+    # math-verify needs explicit multiplication or spacing
+    s = re.sub(r"(\d)(\\[a-zA-Z])", r"\1 \2", s)
     return s
 
 
+def _string_equiv(predicted: str, ground_truth: str) -> bool:
+    """Direct string comparison after normalization.
+
+    Catches cases math-verify fails on (e.g., both parse to []).
+    """
+    pred = predicted.strip().replace(" ", "")
+    gt = ground_truth.strip().replace(" ", "")
+    return pred == gt
+
+
 def _math_verify_equiv(predicted: str, ground_truth: str) -> bool:
-    """Compare using HuggingFace math-verify."""
+    """Compare using HuggingFace math-verify, with string fallback."""
+    pred_norm = _pre_normalize(predicted)
+    gt_norm = _pre_normalize(ground_truth)
+
+    # First try math-verify
     try:
-        pred_norm = _pre_normalize(predicted)
-        gt_norm = _pre_normalize(ground_truth)
         gold = mv_parse(gt_norm)
         answer = mv_parse(pred_norm)
-        return mv_verify(gold, answer)
+        if gold and answer:
+            return mv_verify(gold, answer)
     except Exception as e:
-        logger.debug("math-verify parse/verify failed: %s. Treating as not equal.", e)
-        return False
+        logger.debug("math-verify failed: %s", e)
+
+    # Fallback: if math-verify can't parse either side, do string comparison
+    return _string_equiv(predicted, ground_truth)
 
 
 def _extract_level_number(level_str: str) -> int:
