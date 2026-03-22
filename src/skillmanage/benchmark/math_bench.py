@@ -40,10 +40,12 @@ class MathBenchmark(Benchmark):
         subjects: Optional[List[str]] = None,
         levels: Optional[List[int]] = None,
         dataset_name: str = "EleutherAI/hendrycks_math",
+        llm_client=None,
     ) -> None:
         self._subjects = subjects or SUBJECTS
         self._levels = levels
         self._dataset_name = dataset_name
+        self._llm_client = llm_client  # For LLM judge fallback in answer comparison
 
     @property
     def name(self) -> str:
@@ -156,7 +158,7 @@ class MathBenchmark(Benchmark):
         if not predicted:
             return False, 0.0
 
-        correct = is_equiv(predicted, task.ground_truth)
+        correct = is_equiv(predicted, task.ground_truth, llm_client=self._llm_client)
         return correct, 1.0 if correct else 0.0
 
     def extract_trajectory(self, agent_output: str) -> List[str]:
@@ -272,14 +274,18 @@ except ImportError:
     )
 
 
-def is_equiv(predicted: str, ground_truth: str) -> bool:
+def is_equiv(predicted: str, ground_truth: str, llm_client=None) -> bool:
     """Check if predicted answer is equivalent to ground truth.
 
-    Requires math-verify. Raises ImportError if not installed.
+    Three-level comparison:
+    1. math-verify (ANTLR4 + SymPy)
+    2. String comparison (fallback)
+    3. LLM judge (final fallback, if llm_client provided)
 
     Args:
         predicted: Predicted answer string.
         ground_truth: Ground truth answer string.
+        llm_client: Optional LLM client for judge fallback.
 
     Returns:
         True if answers are equivalent.
@@ -289,7 +295,7 @@ def is_equiv(predicted: str, ground_truth: str) -> bool:
             "math-verify is required for MATH answer comparison. "
             "Install with: pip install math-verify[antlr4_13_2]"
         )
-    return _math_verify_equiv(predicted, ground_truth)
+    return _math_verify_equiv(predicted, ground_truth, llm_client)
 
 
 def _pre_normalize(s: str) -> str:
@@ -298,11 +304,12 @@ def _pre_normalize(s: str) -> str:
     Fixes formatting issues that math-verify can't handle.
     """
     # Normalize comma spacing for tuples: "(1,4)" -> "(1, 4)"
-    s = s.replace(",", ", ")
-    # Fix double spaces from above
+    # But preserve thousands separators: "1,000" stays "1,000"
+    # Thousands separator: digit,digit{3} pattern; tuple: everything else
+    s = re.sub(r",(?!\d{3}(?!\d))", ", ", s)
+    # Fix double spaces
     s = " ".join(s.split())
-    # Fix number-letter concatenation: "289\pi" -> "289\\pi", "4\pi" -> "4\\pi"
-    # math-verify needs explicit multiplication or spacing
+    # Fix number-letter concatenation: "289\pi" -> "289 \pi"
     s = re.sub(r"(\d)(\\[a-zA-Z])", r"\1 \2", s)
     return s
 
@@ -317,12 +324,49 @@ def _string_equiv(predicted: str, ground_truth: str) -> bool:
     return pred == gt
 
 
-def _math_verify_equiv(predicted: str, ground_truth: str) -> bool:
-    """Compare using HuggingFace math-verify, with string fallback."""
+_LLM_JUDGE_PROMPT = """Look at the following two expressions (answers to a math problem) and judge whether they are equivalent. Only perform trivial simplifications.
+
+Examples:
+
+Expression 1          Expression 2          Equivalent
+$2x+3$               $3+2x$                Yes
+3/2                   1.5                   Yes
+$x^2+2x+1$           $(x+1)^2$             Yes
+$x^2+2x+1$           $y^2+2y+1$            No
+3245/5                649                   No
+2/(-3)                -2/3                  Yes
+72 degrees            72                    Yes
+
+YOUR TASK:
+Expression 1: {pred}
+Expression 2: {gt}
+
+Are these equivalent? Answer "Yes" or "No" (without quotes)."""
+
+
+def _llm_judge_equiv(predicted: str, ground_truth: str, llm_client) -> bool:
+    """Use LLM to judge if two math answers are equivalent.
+
+    Last resort fallback when math-verify and string comparison both fail.
+    """
+    try:
+        prompt = _LLM_JUDGE_PROMPT.format(pred=predicted, gt=ground_truth)
+        response = llm_client.generate(prompt).strip().lower()
+        result = response.startswith("yes")
+        logger.debug("LLM judge: '%s' vs '%s' -> %s (raw: %s)",
+                      predicted[:30], ground_truth[:30], result, response[:20])
+        return result
+    except Exception as e:
+        logger.debug("LLM judge failed: %s", e)
+        return False
+
+
+def _math_verify_equiv(predicted: str, ground_truth: str, llm_client=None) -> bool:
+    """Compare using math-verify → string fallback → LLM judge."""
     pred_norm = _pre_normalize(predicted)
     gt_norm = _pre_normalize(ground_truth)
 
-    # First try math-verify
+    # Level 1: math-verify
     try:
         gold = mv_parse(gt_norm)
         answer = mv_parse(pred_norm)
@@ -331,8 +375,15 @@ def _math_verify_equiv(predicted: str, ground_truth: str) -> bool:
     except Exception as e:
         logger.debug("math-verify failed: %s", e)
 
-    # Fallback: if math-verify can't parse either side, do string comparison
-    return _string_equiv(predicted, ground_truth)
+    # Level 2: string comparison
+    if _string_equiv(predicted, ground_truth):
+        return True
+
+    # Level 3: LLM judge (only if both pred and gt are non-empty)
+    if llm_client and predicted and ground_truth:
+        return _llm_judge_equiv(predicted, ground_truth, llm_client)
+
+    return False
 
 
 def _extract_level_number(level_str: str) -> int:

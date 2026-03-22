@@ -104,7 +104,7 @@ class AgentRunner:
             agent_output = self._run_single_turn(task, skills_prompt)
         else:
             # Multi-step: reset env first to get instruction, then retrieve
-            agent_output, used_skills = self._run_multi_step(task)
+            agent_output, used_skills, archive_hit = self._run_multi_step(task)
 
         # 3. Check answer
         success, reward = self.benchmark.check_answer(task, agent_output)
@@ -237,7 +237,7 @@ class AgentRunner:
                     skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
                     agent_output = self._run_single_turn(task, skills_prompt)
                 else:
-                    agent_output, _ = self._run_multi_step(task)
+                    agent_output, _, _ = self._run_multi_step(task)
 
                 success, _ = self.benchmark.check_answer(task, agent_output)
                 if success:
@@ -304,7 +304,7 @@ class AgentRunner:
             if done:
                 break
 
-        return "\n".join(trajectory_parts), used_skills
+        return "\n".join(trajectory_parts), used_skills, archive_hit
 
     # ------------------------------------------------------------------
     # Acquisition pipeline

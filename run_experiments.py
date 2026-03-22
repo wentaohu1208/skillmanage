@@ -129,6 +129,7 @@ def run_no_skill(model_name: str, llm_client, bench, train_tasks, test_tasks, ou
     """Run without skill bank (pure LLM baseline)."""
     from skillmanage.benchmark.base import TaskResult
     from skillmanage.benchmark.math_bench import extract_boxed_answer
+    # bench._llm_client already set to DeepSeek judge in main()
 
     os.makedirs(output_dir, exist_ok=True)
     logger.info("Running NO-SKILL baseline (%s): %d train, %d test", model_name, len(train_tasks), len(test_tasks))
@@ -200,7 +201,7 @@ def run_no_skill(model_name: str, llm_client, bench, train_tasks, test_tasks, ou
         json.dump(summary, f, indent=2)
 
     logger.info("[%s no-skill] Train SR: %d/%d = %.1f%%", model_name,
-                train_correct, len(train_results), summary["train_sr"]*100)
+                train_correct, len(train_tasks), summary["train_sr"]*100)
     logger.info("[%s no-skill] Test SR:  %d/%d = %.1f%%", model_name,
                 test_correct, len(test_results), summary["test_sr"]*100)
 
@@ -214,6 +215,7 @@ def run_with_skill(model_name: str, llm_client, embedding_model, bench, train_ta
     from skillmanage.config import RetrievalConfig, SkillManageConfig
     from skillmanage.core.skill_bank import SkillBank
     from skillmanage.core.storage import save_checkpoint
+    # bench._llm_client already set to DeepSeek judge in main()
 
     os.makedirs(output_dir, exist_ok=True)
     logger.info("Running WITH-SKILL (%s): %d train, %d test", model_name, len(train_tasks), len(test_tasks))
@@ -296,7 +298,7 @@ def run_with_skill(model_name: str, llm_client, embedding_model, bench, train_ta
         json.dump(summary, f, indent=2)
 
     logger.info("[%s skill] Train SR: %d/%d = %.1f%%", model_name,
-                train_correct, len(train_results), summary["train_sr"]*100)
+                train_correct, len(train_tasks), summary["train_sr"]*100)
     logger.info("[%s skill] Test SR:  %.1f%%", model_name, test_sr*100)
     logger.info("[%s skill] SkillBank: active=%d archive=%d forgotten=%d tokens=%d",
                 model_name, stats["active"], stats["archive"], stats["forgotten"], stats["active_tokens"])
@@ -393,9 +395,20 @@ def main():
 
     os.makedirs(OUTPUT_BASE, exist_ok=True)
 
+    # Set random seeds for reproducibility
+    import random
+    import numpy as np
+    random.seed(42)
+    np.random.seed(42)
+
     # Load tasks once, reuse for all experiments
     logger.info("Loading tasks...")
     bench, train_tasks, test_tasks = load_all_tasks()
+
+    # Use DeepSeek as LLM judge for all experiments (stronger than 7B for judging)
+    logger.info("Creating DeepSeek LLM judge for answer verification...")
+    judge_client = create_llm_client(DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL)
+    bench._llm_client = judge_client
 
     all_summaries = {}
 
