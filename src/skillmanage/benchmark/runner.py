@@ -90,26 +90,21 @@ class AgentRunner:
         Returns:
             TaskResult with full execution details.
         """
-        # 1. Retrieve skills
-        active_skills, archive_hit = self.retriever.retrieve(
-            task.instruction, self.skill_bank, self.embedding_model, self.cfg.retrieval,
-        )
-
-        used_skills: List[Skill] = list(active_skills)
-
-        # Handle Archive recall
-        if archive_hit is not None:
-            restored_skill = archive_hit.original_skill_full
-            used_skills = [restored_skill]
-            logger.info("Using archived skill: '%s'", restored_skill.name)
-
-        # 2. Build prompt and execute
-        skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
-
+        # 1. Retrieve skills and execute
+        archive_hit = None
         if self.benchmark.get_interaction_mode() == InteractionMode.SINGLE_TURN:
+            # Single-turn: retrieve by task.instruction, then run
+            active_skills, archive_hit = self.retriever.retrieve(
+                task.instruction, self.skill_bank, self.embedding_model, self.cfg.retrieval,
+            )
+            used_skills: List[Skill] = list(active_skills)
+            if archive_hit is not None:
+                used_skills = [archive_hit.original_skill_full]
+            skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
             agent_output = self._run_single_turn(task, skills_prompt)
         else:
-            agent_output = self._run_multi_step(task, used_skills)
+            # Multi-step: reset env first to get instruction, then retrieve
+            agent_output, used_skills = self._run_multi_step(task)
 
         # 3. Check answer
         success, reward = self.benchmark.check_answer(task, agent_output)
@@ -117,9 +112,14 @@ class AgentRunner:
         # 4. Extract trajectory
         trajectory = self.benchmark.extract_trajectory(agent_output)
 
+        # For multi-step, get task_type from benchmark (not from frozen TaskInstance)
+        task_type = task.task_type
+        if not task_type and hasattr(self.benchmark, "current_task_type"):
+            task_type = self.benchmark.current_task_type
+
         result = TaskResult(
             task_id=task.task_id,
-            task_type=task.task_type,
+            task_type=task_type,
             success=success,
             reward=reward,
             trajectory=trajectory,
@@ -227,19 +227,17 @@ class AgentRunner:
         total = 0
         for task in tasks:
             try:
-                active_skills, archive_hit = self.retriever.retrieve(
-                    task.instruction, self.skill_bank, self.embedding_model, self.cfg.retrieval,
-                )
-                used_skills = list(active_skills)
-                if archive_hit:
-                    used_skills = [archive_hit.original_skill_full]
-
-                skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
-
                 if self.benchmark.get_interaction_mode() == InteractionMode.SINGLE_TURN:
+                    active_skills, archive_hit = self.retriever.retrieve(
+                        task.instruction, self.skill_bank, self.embedding_model, self.cfg.retrieval,
+                    )
+                    used_skills = list(active_skills)
+                    if archive_hit:
+                        used_skills = [archive_hit.original_skill_full]
+                    skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
                     agent_output = self._run_single_turn(task, skills_prompt)
                 else:
-                    agent_output = self._run_multi_step(task, used_skills)
+                    agent_output, _ = self._run_multi_step(task)
 
                 success, _ = self.benchmark.check_answer(task, agent_output)
                 if success:
@@ -262,24 +260,40 @@ class AgentRunner:
         system_prompt = getattr(self.benchmark, "system_prompt", "")
         return self.llm_client.generate(prompt, system_prompt=system_prompt)
 
-    def _run_multi_step(self, task: TaskInstance, used_skills: List[Skill]) -> str:
-        """Execute a multi-step task (ALFWorld, WebShop)."""
-        assert isinstance(self.benchmark, InteractiveBenchmark)
-        skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
+    def _run_multi_step(self, task: TaskInstance) -> tuple:
+        """Execute a multi-step task (ALFWorld, WebShop).
 
+        Resets env first to get instruction, then retrieves skills.
+
+        Returns:
+            Tuple of (agent_output_str, used_skills_list).
+        """
+        assert isinstance(self.benchmark, InteractiveBenchmark)
+
+        # Reset env to get task instruction
         obs = self.benchmark.reset_env(task)
+
+        # Now retrieve skills using the actual instruction from env
+        instruction = getattr(self.benchmark, "current_instruction", "") or obs
+        active_skills, archive_hit = self.retriever.retrieve(
+            instruction, self.skill_bank, self.embedding_model, self.cfg.retrieval,
+        )
+        used_skills: List[Skill] = list(active_skills)
+        if archive_hit is not None:
+            used_skills = [archive_hit.original_skill_full]
+
+        skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
+        system_prompt = self.benchmark.build_system_prompt(skills_prompt)
+
         history: List[str] = []
         trajectory_parts = [f"Observation: {obs}"]
+        max_steps = getattr(self.benchmark, "max_steps", 30)
 
-        max_steps = 30  # Default, can be configured
-        for step in range(max_steps):
-            # Build step prompt (benchmark-specific)
-            step_prompt = self.benchmark.build_prompt(task, skills_prompt)
-            # For multi-step, build_prompt should use history+obs
-            # This is handled by the InteractiveBenchmark implementation
+        for step_num in range(max_steps):
+            step_prompt = self.benchmark.build_step_prompt(task, obs, history)
+            action = self.llm_client.generate(step_prompt, system_prompt=system_prompt)
+            action = action.strip().split("\n")[0]
 
-            action = self.llm_client.generate(step_prompt)
-            action = action.strip()
             history.append(f"Action: {action}")
             trajectory_parts.append(f"Action: {action}")
 
@@ -290,7 +304,7 @@ class AgentRunner:
             if done:
                 break
 
-        return "\n".join(trajectory_parts)
+        return "\n".join(trajectory_parts), used_skills
 
     # ------------------------------------------------------------------
     # Acquisition pipeline

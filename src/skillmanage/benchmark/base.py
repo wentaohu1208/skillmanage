@@ -181,6 +181,32 @@ class InteractiveBenchmark(Benchmark):
         return InteractionMode.MULTI_STEP
 
     @abstractmethod
+    def build_system_prompt(self, skills_prompt: str) -> str:
+        """Build system prompt with skills (called once per task).
+
+        Args:
+            skills_prompt: Pre-formatted skills section.
+
+        Returns:
+            System prompt string.
+        """
+
+    @abstractmethod
+    def build_step_prompt(
+        self, task: TaskInstance, observation: str, history: List[str]
+    ) -> str:
+        """Build prompt for one step (called each step).
+
+        Args:
+            task: The current task.
+            observation: Current environment observation.
+            history: List of previous "Action: ..." and "Observation: ..." strings.
+
+        Returns:
+            Step prompt string.
+        """
+
+    @abstractmethod
     def reset_env(self, task: TaskInstance) -> str:
         """Reset environment for a task.
 

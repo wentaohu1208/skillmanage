@@ -215,10 +215,7 @@ def extract_boxed_answer(text: str) -> str:
     """
     idx = text.rfind("\\boxed{")
     if idx == -1:
-        # Also try \boxed without backslash escape
-        idx = text.rfind("\\boxed{")
-        if idx == -1:
-            return ""
+        return ""
 
     # Match nested braces
     start = idx + len("\\boxed{")
@@ -278,8 +275,7 @@ except ImportError:
 def is_equiv(predicted: str, ground_truth: str) -> bool:
     """Check if predicted answer is equivalent to ground truth.
 
-    Uses HuggingFace math-verify if available (ANTLR4 + SymPy cascade).
-    Falls back to basic string normalization otherwise.
+    Requires math-verify. Raises ImportError if not installed.
 
     Args:
         predicted: Predicted answer string.
@@ -288,9 +284,12 @@ def is_equiv(predicted: str, ground_truth: str) -> bool:
     Returns:
         True if answers are equivalent.
     """
-    if _MATH_VERIFY_AVAILABLE:
-        return _math_verify_equiv(predicted, ground_truth)
-    return _fallback_equiv(predicted, ground_truth)
+    if not _MATH_VERIFY_AVAILABLE:
+        raise ImportError(
+            "math-verify is required for MATH answer comparison. "
+            "Install with: pip install math-verify[antlr4_13_2]"
+        )
+    return _math_verify_equiv(predicted, ground_truth)
 
 
 def _pre_normalize(s: str) -> str:
@@ -299,9 +298,9 @@ def _pre_normalize(s: str) -> str:
     Fixes formatting issues that math-verify can't handle,
     e.g. '(18,-18)' -> '(18, -18)'.
     """
-    # Normalize comma spacing
-    s = s.replace(",", ", ")
-    # Clean up double spaces from above
+    # Normalize comma spacing for tuples: "(18,-18)" -> "(18, -18)"
+    # Only add space when comma is followed by minus sign (not for "1,000,000")
+    s = re.sub(r",\s*(?=-)", ", ", s)
     s = " ".join(s.split())
     return s
 
@@ -315,64 +314,8 @@ def _math_verify_equiv(predicted: str, ground_truth: str) -> bool:
         answer = mv_parse(pred_norm)
         return mv_verify(gold, answer)
     except Exception as e:
-        logger.debug("math-verify failed: %s. Falling back to string comparison.", e)
-        return _fallback_equiv(predicted, ground_truth)
-
-
-def _fallback_equiv(predicted: str, ground_truth: str) -> bool:
-    """Basic fallback: normalize strings then compare.
-
-    Used when math-verify is not installed.
-    """
-    pred = _normalize_basic(predicted)
-    gt = _normalize_basic(ground_truth)
-
-    # Direct string match
-    if pred == gt:
-        return True
-
-    # Try numeric comparison
-    try:
-        pred_val = float(pred)
-        gt_val = float(gt)
-        return abs(pred_val - gt_val) < 1e-6
-    except (ValueError, TypeError):
-        pass
-
-    return False
-
-
-def _normalize_basic(answer: str) -> str:
-    """Basic LaTeX normalization for fallback comparison."""
-    s = answer.strip()
-    s = s.replace("\\left", "").replace("\\right", "")
-    s = s.replace("\\!", "").replace("\\,", " ").replace("\\ ", " ")
-    s = s.replace("\\dfrac", "\\frac").replace("\\tfrac", "\\frac")
-
-    # Remove \text{X} -> X, \textbf{X} -> X, etc.
-    for cmd in ["\\textbf", "\\textit", "\\mathrm", "\\mathbf", "\\text"]:
-        while cmd + "{" in s:
-            start = s.find(cmd + "{")
-            brace = start + len(cmd)
-            depth, j = 0, brace
-            while j < len(s):
-                if s[j] == "{":
-                    depth += 1
-                elif s[j] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                j += 1
-            if depth == 0:
-                s = s[:start] + s[brace + 1 : j] + s[j + 1 :]
-            else:
-                break
-
-    s = s.strip("$.,;: ")
-    # Normalize comma spacing: "(18,-18)" == "(18, -18)"
-    s = s.replace(", ", ",").replace(",", ", ")
-    s = " ".join(s.split())
-    return s
+        logger.debug("math-verify parse/verify failed: %s. Treating as not equal.", e)
+        return False
 
 
 def _extract_level_number(level_str: str) -> int:
@@ -384,7 +327,7 @@ def _extract_level_number(level_str: str) -> int:
     Returns:
         Level number (1-5), defaults to 3 if unparseable.
     """
-    match = re.search(r"(\d)", level_str)
+    match = re.search(r"(\d+)", level_str)
     if match:
         return int(match.group(1))
     return 3

@@ -179,10 +179,55 @@
 - [x] 即插即用设计: Benchmark ABC + Registry + InteractionMode（SINGLE_TURN / MULTI_STEP）
 
 ### 5.1 ALFWorld集成
-- [ ] 安装alfworld环境
-- [ ] 实现agent loop（检索skill → 拼prompt → 执行 → 记录）
-- [ ] 解析task类型标签（6种）
-- [ ] 成功/失败判断
+
+#### 5.1.1 环境搭建
+- [x] `pip install alfworld[full]` + `alfworld-download`
+- [x] 数据路径: `/data/hwt/alfworld_data` (ALFWORLD_DATA环境变量)
+
+#### 5.1.2 Benchmark实现 (alfworld_bench.py) ✅
+- [x] ALFWorldBenchmark(InteractiveBenchmark) — 实现多步交互接口
+- [x] load_tasks(): 加载train(3553)/test(134 unseen)
+- [x] build_system_prompt(): 包含可用命令列表 + skills
+- [x] build_step_prompt(): 历史action + 当前observation
+- [x] reset_env() / step(): 对接alfworld TextWorld环境
+- [x] check_answer(): 基于环境done flag
+- [x] extract_trajectory(): 提取Action步骤列表
+- [x] _detect_task_type(): 从observation中检测6种任务类型
+- [x] InteractiveBenchmark接口扩展: build_system_prompt + build_step_prompt
+
+#### 5.1.3 Runner多步交互支持 ✅
+- [x] runner.py _run_multi_step() 重构:
+  - build_system_prompt(skills) 一次，每步 build_step_prompt(task, obs, history)
+  - action取第一行（防止LLM输出多行）
+  - max_steps从benchmark读取
+
+#### 5.1.4 实验设计 (run_alfworld.py) ✅
+- [x] 实验A: No-skill baseline (DeepSeek + Qwen) — 134 unseen直测
+- [x] 实验B: With-skill lifecycle (DeepSeek + Qwen)
+  - Phase 1: 500 train tasks积累skill bank (checkpoint每100轮)
+  - Phase 2: 134 unseen test (冻结skill bank)
+- [x] 报告格式: 整体SR + 分6种任务类型SR + skill bank状态
+- [x] 输出: /data/hwt/skillmanage/experiments_alfworld/
+- [ ] 实验C: Non-Stationary (Phase轮换, 待后续)
+
+#### 5.1.5 数据分布
+```
+                    Train    Test(unseen)
+pick_and_place       790       24
+look_at_obj_in_light 308       18
+pick_clean_then_place 650      31
+pick_heat_then_place  459      23
+pick_cool_then_place  533      21
+pick_two_obj_and_place 813     17
+Total               3,553     134
+```
+
+#### 5.1.6 评测协议
+- 标准测试集: 134 unseen tasks (和所有paper一致)
+- 最大步数: 30步
+- 成功判定: 环境done=True
+- 指标: SR整体 + SR分6类
+- 对比: ReAct baseline(71%), ExpeL(54%), SkillRL(89.9%)
 
 ### 5.2 WebShop集成
 - [ ] 安装webshop环境
