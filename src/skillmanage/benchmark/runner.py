@@ -261,7 +261,7 @@ class AgentRunner:
                 num_archive=stats["archive"],
                 num_forgotten=stats["forgotten"],
                 active_tokens=stats["active_tokens"],
-                question=task.instruction,
+                question=getattr(self.benchmark, "current_instruction", "") or task.instruction,
             )
 
         return result
