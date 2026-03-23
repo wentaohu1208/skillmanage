@@ -225,7 +225,8 @@ class ALFWorldBenchmark(InteractiveBenchmark):
         self._repeat_count = 0
 
         # Capture initial admissible actions
-        admissible = info.get("admissible_commands", [[]])[0] if isinstance(info, dict) else []
+        raw_admissible = info.get("admissible_commands", []) if isinstance(info, dict) else []
+        admissible = raw_admissible[0] if raw_admissible else []
         self._admissible_actions = [a for a in admissible if a != "help"] if isinstance(admissible, list) else []
 
         logger.debug(
@@ -278,7 +279,8 @@ class ALFWorldBenchmark(InteractiveBenchmark):
         self._won = info["won"][0] if isinstance(info, dict) and "won" in info else False
 
         # Update admissible actions for next step
-        admissible = info.get("admissible_commands", [[]])[0] if isinstance(info, dict) else []
+        raw_admissible = info.get("admissible_commands", []) if isinstance(info, dict) else []
+        admissible = raw_admissible[0] if raw_admissible else []
         self._admissible_actions = [a for a in admissible if a != "help"] if isinstance(admissible, list) else []
 
         return observation, float(self._won), is_done
