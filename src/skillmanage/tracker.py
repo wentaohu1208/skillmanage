@@ -29,10 +29,10 @@ class ExperimentTracker:
         self._task_log_path = os.path.join(output_dir, "task_log.jsonl")
         self._lifecycle_log_path = os.path.join(output_dir, "lifecycle_log.jsonl")
 
-        # Clear previous logs
+        # Ensure log files exist (append mode — safe for restart)
         for path in [self._task_log_path, self._lifecycle_log_path]:
-            with open(path, "w") as f:
-                pass  # create empty file
+            with open(path, "a") as f:
+                pass
 
     # ------------------------------------------------------------------
     # Task logging

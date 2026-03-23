@@ -307,6 +307,6 @@ class Compressor:
         saved = original_cost - new_token_cost
         logger.info(
             "Distilled '%s': %d -> %d tokens (saved %d)",
-            skill.name, original_cost, skill.token_cost, saved,
+            skill.name, original_cost, new_token_cost, saved,
         )
         return max(saved, 0)

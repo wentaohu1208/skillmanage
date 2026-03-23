@@ -155,6 +155,8 @@ def run_no_skill(llm, bench, train_tasks, test_tasks):
                           success=success, reward=reward, agent_answer=output,
                           ground_truth=task.ground_truth, trajectory=bench.extract_trajectory(output), num_steps=0)
 
+    train_correct = 0
+    test_correct = 0
     for label, tasks in [("Train", train_tasks), ("Test", test_tasks)]:
         results = []
         for i, task in enumerate(tasks):
