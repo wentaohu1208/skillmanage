@@ -246,7 +246,10 @@ class AgentRunner:
                     if archive_hit:
                         used_skills = [archive_hit.original_skill_full]
                     skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
-                    agent_output = self._run_single_turn(task, skills_prompt)
+                    warnings_section = SkillRetriever.format_warnings_for_system(
+                        used_skills, self.cfg.acquisition.max_warnings
+                    )
+                    agent_output = self._run_single_turn(task, skills_prompt, warnings_section)
                 else:
                     agent_output, _, _ = self._run_multi_step(task)
 
@@ -333,7 +336,10 @@ class AgentRunner:
             # Retry with repaired skill
             used_skills = [repaired]
             skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
-            agent_output = self._run_single_turn(task, skills_prompt)
+            warnings_section = SkillRetriever.format_warnings_for_system(
+                used_skills, self.cfg.acquisition.max_warnings
+            )
+            agent_output = self._run_single_turn(task, skills_prompt, warnings_section)
             success, reward = self.benchmark.check_answer(task, agent_output)
             agent_answer = self.benchmark.extract_answer(agent_output)
 
