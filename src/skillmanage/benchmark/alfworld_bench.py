@@ -338,7 +338,8 @@ class ALFWorldBenchmark(InteractiveBenchmark):
             config = yaml.safe_load(f)
 
         env_type = config["env"]["type"]
-        env = getattr(alfworld.agents.environment, env_type)(config, train_eval=train_eval)
+        env_cls = alfworld.agents.environment.get_environment(env_type)
+        env = env_cls(config, train_eval=train_eval)
         env = env.init_env(batch_size=1)
 
         logger.info("Created ALFWorld env: split=%s, config=%s", train_eval, config_path)
