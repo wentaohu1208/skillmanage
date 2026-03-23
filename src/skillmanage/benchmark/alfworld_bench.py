@@ -100,6 +100,9 @@ class ALFWorldBenchmark(InteractiveBenchmark):
         self._current_task_type = ""
         self._current_instruction = ""
         self._won = False
+        self._admissible_actions: List[str] = []
+        self._last_action = ""
+        self._repeat_count = 0
 
     @property
     def name(self) -> str:
@@ -162,9 +165,12 @@ class ALFWorldBenchmark(InteractiveBenchmark):
     ) -> str:
         """Build prompt for one interaction step."""
         history_str = "\n".join(history[-20:]) if history else "(none)"
+        admissible_str = ", ".join(self._admissible_actions) if self._admissible_actions else "look"
         return ALFWORLD_STEP_PROMPT.format(
+            task_instruction=self._current_instruction,
             history=history_str,
             observation=observation,
+            admissible_actions=admissible_str,
         )
 
     def check_answer(
@@ -215,6 +221,12 @@ class ALFWorldBenchmark(InteractiveBenchmark):
         self._current_task_type = _parse_task_type(game_file)
 
         self._won = False
+        self._last_action = ""
+        self._repeat_count = 0
+
+        # Capture initial admissible actions
+        admissible = info.get("admissible_commands", [[]])[0] if isinstance(info, dict) else []
+        self._admissible_actions = [a for a in admissible if a != "help"] if isinstance(admissible, list) else []
 
         logger.debug(
             "ALFWorld reset: type=%s, instruction=%s",
@@ -226,11 +238,36 @@ class ALFWorldBenchmark(InteractiveBenchmark):
     def step(self, action: str) -> Tuple[str, float, bool]:
         """Execute one action in the environment.
 
+        Handles think: interception, Action: prefix stripping, and loop detection.
+
         Returns:
             (observation, reward, done)
         """
         if self._env is None:
             raise RuntimeError("Environment not initialized. Call reset_env first.")
+
+        # Strip common LLM prefixes
+        action = action.strip()
+        if action.lower().startswith("action:"):
+            action = action[len("action:"):].strip()
+
+        # Empty action guard
+        if not action:
+            return "Invalid action.", 0.0, False
+
+        # Intercept think: actions (ReAct pattern) — don't send to env
+        if action.lower().startswith("think:"):
+            return "OK.", 0.0, False
+
+        # Loop detection: if same action repeated 3+ times, force termination
+        if action == self._last_action:
+            self._repeat_count += 1
+            if self._repeat_count >= 3:
+                logger.warning("Loop detected: '%s' repeated %d times. Terminating.", action, self._repeat_count)
+                return "Nothing happens. (terminated due to repeated action)", 0.0, True
+        else:
+            self._last_action = action
+            self._repeat_count = 1
 
         obs, reward, done, info = self._env.step([action])
 
@@ -238,7 +275,11 @@ class ALFWorldBenchmark(InteractiveBenchmark):
         observation = _process_observation(observation)
 
         is_done = done[0] if isinstance(done, list) else bool(done)
-        self._won = info["won"][0] if isinstance(info, dict) and "won" in info else is_done
+        self._won = info["won"][0] if isinstance(info, dict) and "won" in info else False
+
+        # Update admissible actions for next step
+        admissible = info.get("admissible_commands", [[]])[0] if isinstance(info, dict) else []
+        self._admissible_actions = [a for a in admissible if a != "help"] if isinstance(admissible, list) else []
 
         return observation, float(self._won), is_done
 

@@ -103,8 +103,10 @@ def print_per_type(per_type, correct, total):
 
 def run_no_skill(llm):
     from skillmanage.benchmark import create_benchmark
+    from skillmanage.tracker import ExperimentTracker
     output_dir = os.path.join(OUTPUT_BASE, "no_skill")
     os.makedirs(output_dir, exist_ok=True)
+    tracker = ExperimentTracker(output_dir)
     bench = create_benchmark("alfworld", data_path=ALFWORLD_DATA, max_steps=MAX_STEPS)
     test_tasks = bench.load_tasks(split="test")
     logger.info("[%s] NO-SKILL: %d test tasks", MODEL_NAME, len(test_tasks))
@@ -124,10 +126,19 @@ def run_no_skill(llm):
                 if done:
                     break
             success, _ = bench.check_answer(task, "")
+            step_count = len([h for h in history if h.startswith("Action:")])
             results.append({"task_id": task.task_id, "task_type": bench.current_task_type,
-                            "success": success, "steps": len([h for h in history if h.startswith("Action:")])})
+                            "success": success, "steps": step_count})
             logger.info("[%s] Test %d/%d %s | type=%s", MODEL_NAME, i+1, len(test_tasks),
                         "OK" if success else "X", bench.current_task_type)
+            tracker.log_task(
+                round_num=i, task_id=task.task_id, task_type=bench.current_task_type,
+                success=success, reward=1.0 if success else 0.0,
+                ground_truth="done", predicted="done" if success else "fail",
+                used_skill_ids=[], used_skill_names=[],
+                num_active=0, num_archive=0, num_forgotten=0, active_tokens=0,
+                phase="test", question=bench.current_instruction,
+            )
         except Exception as e:
             logger.error("[%s] Test %d FAILED: %s", MODEL_NAME, i+1, e)
             results.append({"task_id": task.task_id, "task_type": "unknown", "success": False, "steps": 0})
@@ -150,8 +161,10 @@ def run_with_skill(llm):
     from skillmanage.core.skill_bank import SkillBank
     from skillmanage.core.storage import save_checkpoint
 
+    from skillmanage.tracker import ExperimentTracker
     output_dir = os.path.join(OUTPUT_BASE, "with_skill")
     os.makedirs(output_dir, exist_ok=True)
+    tracker = ExperimentTracker(output_dir)
 
     train_bench = create_benchmark("alfworld", data_path=ALFWORLD_DATA, max_steps=MAX_STEPS)
     test_bench = create_benchmark("alfworld", data_path=ALFWORLD_DATA, max_steps=MAX_STEPS)
@@ -162,7 +175,7 @@ def run_with_skill(llm):
         storage_dir=output_dir, checkpoint_interval=100,
     )
     skill_bank = SkillBank(embedding_dim=1024)
-    runner = AgentRunner(benchmark=train_bench, skill_bank=skill_bank, embedding_model=emb, llm_client=llm, cfg=cfg)
+    runner = AgentRunner(benchmark=train_bench, skill_bank=skill_bank, embedding_model=emb, llm_client=llm, cfg=cfg, tracker=tracker)
 
     # Train
     train_tasks = train_bench.load_tasks(split="train", limit=NUM_TRAIN)
@@ -208,6 +221,18 @@ def run_with_skill(llm):
                             "success": success, "skills_used": len(used)})
             logger.info("[%s] Test %d/%d %s | type=%s | skills=%d", MODEL_NAME, i+1, len(test_tasks),
                         "OK" if success else "X", test_bench.current_task_type, len(used))
+            stats = skill_bank.stats()
+            tracker.log_task(
+                round_num=len(train_tasks) + i, task_id=task.task_id,
+                task_type=test_bench.current_task_type,
+                success=success, reward=1.0 if success else 0.0,
+                ground_truth="done", predicted="done" if success else "fail",
+                used_skill_ids=[s.skill_id for s in used],
+                used_skill_names=[s.name for s in used],
+                num_active=stats["active"], num_archive=stats["archive"],
+                num_forgotten=stats["forgotten"], active_tokens=stats["active_tokens"],
+                phase="test", question=test_bench.current_instruction,
+            )
         except Exception as e:
             logger.error("[%s] Test %d FAILED: %s", MODEL_NAME, i+1, e)
             results.append({"task_id": task.task_id, "task_type": "unknown", "success": False, "skills_used": 0})

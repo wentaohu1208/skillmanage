@@ -479,7 +479,7 @@ class AgentRunner:
         Resets env first to get instruction, then retrieves skills.
 
         Returns:
-            Tuple of (agent_output_str, used_skills_list).
+            Tuple of (agent_output_str, used_skills_list, archive_hit_or_none).
         """
         assert isinstance(self.benchmark, InteractiveBenchmark)
 
@@ -496,7 +496,12 @@ class AgentRunner:
             used_skills = [archive_hit.original_skill_full]
 
         skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
+        warnings_section = SkillRetriever.format_warnings_for_system(
+            used_skills, self.cfg.acquisition.max_warnings
+        )
         system_prompt = self.benchmark.build_system_prompt(skills_prompt)
+        if warnings_section:
+            system_prompt += "\n" + warnings_section
 
         history: List[str] = []
         trajectory_parts = [f"Observation: {obs}"]

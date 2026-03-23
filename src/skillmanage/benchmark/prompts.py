@@ -32,12 +32,21 @@ Think through this carefully step by step, then give your final answer on the la
 
 ALFWORLD_SYSTEM_PROMPT = """You are an agent in a household environment. You interact with objects by issuing text commands.
 Available commands: go to [place], take [object] from [place], put [object] in/on [place], open [container], close [container], use [object], heat [object] with [appliance], clean [object] with [appliance], cool [object] with [appliance], examine [object], look.
+
+Important rules:
+- Output ONLY one action per turn, no extra text.
+- You must choose from the admissible actions provided each turn.
+- After heating/cooling an object in an appliance, you must take it out before moving.
 {skills_prompt}"""
 
-ALFWORLD_STEP_PROMPT = """Previous actions:
+ALFWORLD_STEP_PROMPT = """Task: {task_instruction}
+
+Previous actions:
 {history}
 
 Current observation: {observation}
+
+Admissible actions: {admissible_actions}
 
 Issue your next command (one action only):"""
 
