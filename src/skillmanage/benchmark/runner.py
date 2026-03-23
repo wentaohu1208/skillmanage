@@ -199,10 +199,26 @@ class AgentRunner:
             self.embedding_model, self.cfg.active, self.cfg.retrieval,
         )
 
-        # Track skills that moved Active→Archive
+        # Track lifecycle events from round management
         if self.tracker:
+            # Collect IDs consumed by merge (not archived, just replaced)
+            merged_consumed = set()
+            for a_id, a_name, b_id, b_name, m_id, m_name in round_report.merge_details:
+                merged_consumed.add(a_id)
+                merged_consumed.add(b_id)
+                self.tracker.log_skill_merged(
+                    current_round, a_id, a_name, b_id, b_name, m_id, m_name,
+                )
+
+            # Track distill events
+            for s_id, s_name, old_tok, new_tok in round_report.distill_details:
+                self.tracker.log_skill_distilled(
+                    current_round, s_id, s_name, old_tok, new_tok,
+                )
+
+            # Track skills that truly moved Active→Archive (exclude merge-consumed)
             active_after = set(self.skill_bank.active.keys())
-            newly_archived = active_before - active_after
+            newly_archived = active_before - active_after - merged_consumed
             for sid in newly_archived:
                 meta = active_meta_snapshot.get(sid, {})
                 imp = round_report.importance_scores.get(sid, 0.0)
@@ -213,18 +229,6 @@ class AgentRunner:
                     importance=imp,
                     call_count=meta.get("call_count", 0),
                     success_rate=meta.get("success_rate", 0.0),
-                )
-
-            # Track merge events
-            for a_id, a_name, b_id, b_name, m_id, m_name in round_report.merge_details:
-                self.tracker.log_skill_merged(
-                    current_round, a_id, a_name, b_id, b_name, m_id, m_name,
-                )
-
-            # Track distill events
-            for s_id, s_name, old_tok, new_tok in round_report.distill_details:
-                self.tracker.log_skill_distilled(
-                    current_round, s_id, s_name, old_tok, new_tok,
                 )
 
         # 9. Tick Archive inactive
@@ -579,10 +583,19 @@ class AgentRunner:
                         skill.source, skill.task_type, skill.confidence, skill.token_cost,
                     )
 
-                self.active_mgr.on_new_skill_added(
+                comp_report = self.active_mgr.on_new_skill_added(
                     self.skill_bank, current_round, self.llm_client,
                     self.embedding_model, self.cfg.active, self.cfg.retrieval,
                 )
+                if comp_report and self.tracker:
+                    for a_id, a_name, b_id, b_name, m_id, m_name in comp_report.merge_details:
+                        self.tracker.log_skill_merged(
+                            current_round, a_id, a_name, b_id, b_name, m_id, m_name,
+                        )
+                    for s_id, s_name, old_tok, new_tok in comp_report.distill_details:
+                        self.tracker.log_skill_distilled(
+                            current_round, s_id, s_name, old_tok, new_tok,
+                        )
 
     def _consolidate_warnings(self, active_skill, max_warnings: int) -> None:
         """Consolidate excessive warnings into top-N via LLM."""

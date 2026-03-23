@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ..config import ActiveConfig, RetrievalConfig
 from ..core.embedding import EmbeddingModel
@@ -132,13 +132,17 @@ class ActiveManager:
         embedding_model: EmbeddingModel,
         active_cfg: ActiveConfig,
         retrieval_cfg: RetrievalConfig,
-    ) -> None:
+    ) -> Optional["CompressionReport"]:
         """Check budget after a new skill is added.
 
         If over budget, triggers compression cycle.
+
+        Returns:
+            CompressionReport if compression ran, None otherwise.
         """
         if skill_bank.is_over_budget(retrieval_cfg):
             logger.info("New skill pushed over budget, running compression")
-            self._compressor.compress_if_needed(
+            return self._compressor.compress_if_needed(
                 skill_bank, embedding_model, llm_client, active_cfg, retrieval_cfg
             )
+        return None
