@@ -12,7 +12,7 @@
 MODEL_PATH="/data/hwt/hf_ckpt/Qwen2.5-7B-Instruct"
 PORT=8000
 HOST="0.0.0.0"
-GPU=7 # 第一个参数指定GPU，默认GPU 0
+GPU=6 # 第一个参数指定GPU，默认GPU 0
 
 export CUDA_VISIBLE_DEVICES=$GPU
 
@@ -36,4 +36,4 @@ python3 -m vllm.entrypoints.openai.api_server \
     --port "$PORT" \
     --trust-remote-code \
     --max-model-len 4096 \
-    --gpu-memory-utilization 0.2
+    --gpu-memory-utilization 0.6

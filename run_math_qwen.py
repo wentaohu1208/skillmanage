@@ -61,13 +61,13 @@ SUBJECT = "geometry"
 LEVELS = [4, 5]
 NUM_TRAIN = None
 NUM_TEST = None
-OUTPUT_BASE = os.environ.get("OUTPUT_BASE", "/data/hwt/skillmanage/exp_math_qwen")
+OUTPUT_BASE = os.environ.get("OUTPUT_BASE", "/data/hwt/skillmanage/output/exp_math_qwen")
 
 # Skill lifecycle config
 SKILL_TOP_K = 3
 SKILL_SIM_THRESHOLD = 0.3
 SKILL_TOKEN_BUDGET = 2000
-CHECKPOINT_INTERVAL = 50
+CHECKPOINT_INTERVAL = 1
 
 DEBUG = False
 
