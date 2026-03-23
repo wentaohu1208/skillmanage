@@ -24,9 +24,16 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
+os.makedirs(os.environ.get("OUTPUT_BASE", "/data/hwt/skillmanage/outputs/exp_math_qwen_v2"), exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(
+            os.path.join(os.environ.get("OUTPUT_BASE", "/data/hwt/skillmanage/outputs/exp_math_qwen_v2"), "run.log"),
+        ),
+    ],
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
