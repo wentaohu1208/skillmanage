@@ -140,9 +140,11 @@ def _log_debug(task, result, pred):
 def run_no_skill(llm, bench, train_tasks, test_tasks):
     from skillmanage.benchmark.base import TaskResult
     from skillmanage.benchmark.math_bench import extract_boxed_answer
+    from skillmanage.tracker import ExperimentTracker
 
     output_dir = os.path.join(OUTPUT_BASE, "no_skill")
     os.makedirs(output_dir, exist_ok=True)
+    tracker = ExperimentTracker(output_dir)
     logger.info("EXP 1: %s NO SKILL — %d train, %d test", MODEL_NAME, len(train_tasks), len(test_tasks))
 
     def _run(task):
@@ -162,6 +164,13 @@ def run_no_skill(llm, bench, train_tasks, test_tasks):
                 pred = extract_boxed_answer(r.agent_answer)
                 s = "OK" if r.success else "X"
                 logger.info("[%s] %s %d/%d %s | pred=%s gt=%s", MODEL_NAME, label, i+1, len(tasks), s, pred[:20], task.ground_truth[:20])
+                tracker.log_task(
+                    round_num=i, task_id=task.task_id, task_type=task.task_type,
+                    success=r.success, reward=r.reward, ground_truth=task.ground_truth,
+                    predicted=pred, used_skill_ids=[], used_skill_names=[],
+                    num_active=0, num_archive=0, num_forgotten=0, active_tokens=0,
+                    phase=label.lower(),
+                )
                 if DEBUG and not r.success:
                     _log_debug(task, r, pred)
             except Exception as e:
@@ -197,9 +206,12 @@ def run_with_skill(llm, bench, train_tasks, test_tasks):
         retrieval=RetrievalConfig(top_k=SKILL_TOP_K, similarity_threshold=SKILL_SIM_THRESHOLD, token_budget=SKILL_TOKEN_BUDGET),
         storage_dir=output_dir, checkpoint_interval=CHECKPOINT_INTERVAL,
     )
+    from skillmanage.tracker import ExperimentTracker
+    tracker = ExperimentTracker(output_dir)
+
     emb = create_embedding()
     skill_bank = SkillBank(embedding_dim=1024)
-    runner = AgentRunner(benchmark=bench, skill_bank=skill_bank, embedding_model=emb, llm_client=llm, cfg=cfg)
+    runner = AgentRunner(benchmark=bench, skill_bank=skill_bank, embedding_model=emb, llm_client=llm, cfg=cfg, tracker=tracker)
 
     # Train
     train_results = []

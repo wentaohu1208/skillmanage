@@ -52,12 +52,14 @@ class AgentRunner:
         embedding_model: EmbeddingModel,
         llm_client: BaseLLMClient,
         cfg: SkillManageConfig,
+        tracker=None,
     ) -> None:
         self.benchmark = benchmark
         self.skill_bank = skill_bank
         self.embedding_model = embedding_model
         self.llm_client = llm_client
         self.cfg = cfg
+        self.tracker = tracker  # Optional ExperimentTracker
 
         # Lifecycle components
         self.retriever = SkillRetriever()
@@ -142,12 +144,25 @@ class AgentRunner:
 
         # 5. Handle Archive recall result
         if archive_hit is not None:
+            if self.tracker:
+                archived = self.skill_bank.get_archived_skill(archive_hit.original_skill_id)
+                self.tracker.log_skill_recalled(
+                    current_round, archive_hit.original_skill_id,
+                    archive_hit.original_skill_full.name,
+                    success=success,
+                    recall_count=archived.recall_count if archived else 0,
+                )
             promoted = self.archive_mgr.record_recall_result(
                 self.skill_bank, archive_hit.original_skill_id,
                 success, current_round, self.embedding_model, self.cfg.archive,
             )
             if promoted:
                 logger.info("Archive skill promoted back to Active")
+                if self.tracker:
+                    self.tracker.log_skill_promoted(
+                        current_round, archive_hit.original_skill_id,
+                        archive_hit.original_skill_full.name,
+                    )
 
         # 6. Update meta for Active skills used
         active_used_ids = [
@@ -162,15 +177,65 @@ class AgentRunner:
         self._run_acquisition(task, result, used_skills, current_round)
 
         # 8. Active management (every round)
-        self.active_mgr.on_round_end(
+        active_before = set(self.skill_bank.active.keys())
+        archive_before = set(self.skill_bank.archive.keys())
+
+        round_report = self.active_mgr.on_round_end(
             self.skill_bank, current_round, self.llm_client,
             self.embedding_model, self.cfg.active, self.cfg.retrieval,
         )
 
+        # Track skills that moved Active→Archive
+        if self.tracker:
+            active_after = set(self.skill_bank.active.keys())
+            newly_archived = active_before - active_after
+            for sid in newly_archived:
+                archived = self.skill_bank.get_archived_skill(sid)
+                if archived:
+                    imp = round_report.importance_scores.get(sid, 0.0)
+                    self.tracker.log_skill_archived(
+                        current_round, sid, archived.original_skill_full.name,
+                        reason="importance" if imp > 0 else "quality_floor",
+                        importance=imp,
+                        call_count=archived.original_skill_full.token_cost,
+                        success_rate=0.0,
+                    )
+
         # 9. Tick Archive inactive
+        forgotten_before = set(self.skill_bank.forgotten.keys())
+
         self.archive_mgr.tick_inactive(
             self.skill_bank, current_round, self.cfg.archive, self.cfg.forgotten,
         )
+
+        # Track skills that moved Archive→Forgotten
+        if self.tracker:
+            forgotten_after = set(self.skill_bank.forgotten.keys())
+            newly_forgotten = forgotten_after - forgotten_before
+            for sid in newly_forgotten:
+                f = self.skill_bank.forgotten.get(sid)
+                if f:
+                    self.tracker.log_skill_forgotten(current_round, sid, f.name)
+
+        # 10. Track task result
+        if self.tracker:
+            predicted = self.benchmark.extract_answer(agent_output) if hasattr(self.benchmark, 'extract_answer') else ""
+            stats = self.skill_bank.stats()
+            self.tracker.log_task(
+                round_num=current_round,
+                task_id=task.task_id,
+                task_type=task_type,
+                success=success,
+                reward=reward,
+                ground_truth=task.ground_truth,
+                predicted=predicted,
+                used_skill_ids=[s.skill_id for s in used_skills],
+                used_skill_names=[s.name for s in used_skills],
+                num_active=stats["active"],
+                num_archive=stats["archive"],
+                num_forgotten=stats["forgotten"],
+                active_tokens=stats["active_tokens"],
+            )
 
         return result
 
@@ -333,6 +398,14 @@ class AgentRunner:
             new_emb = self.embedding_model.encode_skill(repaired)
             self.skill_bank.update_active_embedding(repaired.skill_id, new_emb)
 
+            if self.tracker:
+                self.tracker.log_skill_repaired(
+                    current_round, repaired.skill_id, repaired.name,
+                    version=active_entry.version,
+                    reason=diagnosis.reason[:100],
+                    retry_success=False,  # updated below if success
+                )
+
             # Retry with repaired skill
             used_skills = [repaired]
             skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
@@ -473,6 +546,12 @@ class AgentRunner:
                 self.skill_bank.add_to_active(skill, emb)
                 self.alignment.mark_extracted(task.task_type, candidate.pattern_id)
 
+                if self.tracker:
+                    self.tracker.log_skill_created(
+                        current_round, skill.skill_id, skill.name,
+                        skill.source, skill.task_type, skill.confidence, skill.token_cost,
+                    )
+
                 self.active_mgr.on_new_skill_added(
                     self.skill_bank, current_round, self.llm_client,
                     self.embedding_model, self.cfg.active, self.cfg.retrieval,
@@ -527,10 +606,21 @@ class AgentRunner:
                     "Attached warning to '%s': %s",
                     active_skill.skill.name, analysis.warning_text[:50],
                 )
+                if self.tracker:
+                    self.tracker.log_warning_attached(
+                        current_round, analysis.skill_id, active_skill.skill.name,
+                        analysis.warning_text, len(active_skill.skill.warnings),
+                    )
                 # Consolidate if too many warnings
                 max_w = self.cfg.acquisition.max_warnings
                 if len(active_skill.skill.warnings) > max_w:
+                    old_count = len(active_skill.skill.warnings)
                     self._consolidate_warnings(active_skill, max_w)
+                    if self.tracker:
+                        self.tracker.log_warnings_consolidated(
+                            current_round, analysis.skill_id, active_skill.skill.name,
+                            old_count, len(active_skill.skill.warnings),
+                        )
         elif isinstance(analysis, Skill):
             # Only create independent failure skill if configured
             if self.cfg.acquisition.create_failure_skill:
