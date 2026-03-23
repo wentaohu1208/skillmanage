@@ -1,103 +1,92 @@
 # Findings & Research Notes
 
-## 框架设计发现
+## V1 实验发现 (MATH Geometry L4-L5, Qwen-7B)
 
-### Skill Bank规模存在最优点
-- Phase Transition论文（arXiv:2601.04748）：skill selection accuracy在library size超过临界值后骤降
-- SkillsBench（arXiv:2602.12670）：2-3个focused skill（+18.6pp）优于4+个skill（+5.9pp）
-- 综合文档型skill反而有害（-2.9pp）
-- **结论**：需要token预算控制，通过实验找sweet spot
+### 核心结果: Skill 帮倒忙
+| | No Skill | With Skill | 差异 |
+|---|:---:|:---:|:---:|
+| Train SR (598题) | 48.7% | 46.3% | **-2.4%** |
+| Test SR (257题) | 47.5% | 42.4% | **-5.1%** |
 
-### 现有方法的共同缺陷
-- Voyager：只增不减，skill bank无限膨胀
-- SkillRL：有分层但没有遗忘和质量门控
-- SAGE：skill库每条chain独立，不跨链累积
-- AutoSkill：只有Add/Merge/Discard，没有lifecycle
-- **Gap**：没有人做完整的skill lifecycle management
+### 六大根因
+1. **检索精度低** (threshold=0.3): Top-3 skill 占62%调用但SR仅42%，比baseline还低
+2. **Warning堆积**: 平均11条/skill，最多43条，混在prompt里干扰推理
+3. **Failure skill无价值**: 5个avoid_skill，SR=0.46，淘汰率77%
+4. **低质量skill不被淘汰**: SR=41%的skill因高frequency保持在Active（马太效应）
+5. **Skill description太宽泛**: "determine coordinates"匹配370次
+6. **Skill未被修复**: 所有version=1
 
-### Acquisition设计演化
-- 初始：批量式（攒够N条再Alignment）→ 空窗期问题
-- 改进：增量式（每来一条更新PatternBuffer）→ 达到M条就提取
-- 额外：失败学习（从失败轨迹提取warnings附加到skill）
-
-### Staging Area去除
-- 原设计：Acquisition → Staging（试用验证）→ Active
-- 问题：Acquisition的三道过滤已经做了质量验证，Staging重复
-- 简化：Acquisition（自带验证）→ 直接进Active
-- Skill Bank = Active，概念更清晰
-
-### 存储方案
-- 实验阶段：方案3（内存dict + 定期dump到JSON/npz）
-- 正式部署：方案2（ChromaDB/FAISS + JSON）
+### V2 修复方案（已部署）
+| 修改 | 值 |
+|------|-----|
+| similarity_threshold | 0.3 → 0.5 |
+| quality_floor | 新增, sr<0.35 且 calls≥30 强制降级 |
+| max_warnings | 新增, 5条上限 + LLM合并 |
+| Prompt分离 | skills在user prompt, warnings在system prompt |
+| create_failure_skill | True → False |
+| Skill Repair | 新增, 诊断+重写+重试max 3 |
 
 ---
 
-## 数据集调研
+## Skill 在 MATH vs ALFWorld 上的根本差异
 
-### 四个Benchmark
+### MATH (推理型): Skill 可能无增量信息
+- 模型训练数据里有海量数学题解，"用海伦公式" 是模型已知知识
+- Skill = 重复模型已知信息 = 占prompt空间 + 分散注意力
+- 归因困难: 做对了不知道是 skill 帮的还是模型本来就会
 
-| 数据集 | Train | Test | 类别数 | Metric | 交互方式 |
-|--------|-------|------|--------|--------|---------|
-| ALFWorld | 3,553 | 134 | 6种任务类型 | SR | 多步交互 |
-| WebShop | ~11,587 | 500 | 按商品类别 | Avg+SR | 多步交互 |
-| MATH | 7,500 | 5,000 | 7类×5难度 | EM Acc | 单轮CoT |
-| BBH | 无train | 6,511 | 23种推理类型 | EM Acc | 单轮CoT |
-
-### ALFWorld任务类型分布
-| 类型 | Train | Test |
-|------|-------|------|
-| pick_and_place | 790 | 24 |
-| look_at_obj_in_light | 308 | 18 |
-| pick_clean_then_place | 650 | 31 |
-| pick_heat_then_place | 459 | 23 |
-| pick_cool_then_place | 533 | 21 |
-| pick_two_obj_and_place | 813 | 17 |
-
-### MATH类别分布
-| 类别 | Train | Test |
-|------|-------|------|
-| Algebra | 1,744 | 1,187 |
-| Intermediate Algebra | 1,295 | 903 |
-| Prealgebra | 1,205 | 871 |
-| Number Theory | 869 | 540 |
-| Geometry | 870 | 479 |
-| Precalculus | 746 | 546 |
-| Counting & Probability | 771 | 474 |
-
-### BBH无训练集
-- 27个子任务（归为23种），每种约250题
-- 需要自划分：70% task stream / 30% test
-- 标准评测用3-shot CoT prompting
-
-### 下载方式
-- BBH: `load_dataset("lukaemon/bbh")`
-- MATH: `load_dataset("hendrycks/competition_math")`
-- ALFWorld: `pip install alfworld[full]` + `alfworld-download`
-- WebShop: GitHub clone + `./setup.sh -d all`
+### ALFWorld (操作型): Skill 有真实信息增量
+- 模型训练数据极少有 "go to fridge 1, take egg 1" 这种操作序列
+- Skill = 具体操作策略 = 模型不一定自己能发明
+- Warning 更具体: "加热后必须从微波炉取出" 而不是 "注意计算准确性"
+- 策略: 先在 ALFWorld 证明系统有效，再考虑 MATH
 
 ---
 
-## 参考代码库
+## 与 SkillRL 的核心差异
 
-### 最值得参考 Top 5
+| 维度 | SkillRL | 我们 |
+|------|---------|------|
+| Skill 管理 | 只增不减 (55→100) | 完整 lifecycle |
+| Skill 来源 | teacher model (o3) 离线蒸馏 | agent 自身轨迹增量提取 |
+| 获取时机 | 每个 validation epoch 批量 | 每个 task 后实时 |
+| Policy 训练 | SFT + GRPO (改权重) | inference-time (不改权重) |
+| 非稳态适应 | 无机制 | Archive 召回 |
+| 检索 | 关键词分类匹配 | embedding 语义检索 |
 
-| 仓库 | Stars | 关键文件 | 复用什么 |
-|------|-------|---------|---------|
-| SkillRL | 472 | skills_only_memory.py, skill_updater.py | 双模式检索、失败evolution |
-| Voyager | 6,756 | agents/skill.py | ChromaDB存储、add/retrieve API |
-| AutoSkill | 175 | models.py, merge.py, retrieval.py | Lifecycle状态机、混合检索 |
-| ExpeL | 208 | expel.py, insight_extraction.py | 双池设计、ADD/EDIT/REMOVE |
-| MemEngine | 107 | BaseMemory.py, Forget.py | 模块化架构 |
+**定位**: 我们不是"更好的SkillRL"，而是"SkillRL缺失的那一块"——lifecycle management。
 
-### 复用策略
-- 环境交互层：ReAct/SkillRL
-- Skill数据结构：SkillRL格式 + 扩展warnings
-- 存储：Voyager模式（内存+JSON）
-- 检索：SkillRL双模式
-- Acquisition：ExpeL + SkillRL
-- Compression：AutoSkill的merge.py
-- Forgetting：MemEngine + AutoSkill
-- 整体架构：MemEngine模块化设计
+---
+
+## 公平对比设计
+
+### 必须证明两步
+1. **Skill 有正面价值**: With Skill + Lifecycle > No Skill
+2. **Lifecycle 有用**: With Skill + Lifecycle > With Skill (Voyager/LRU等)
+
+### 核心实验: 控制 acquisition，只变 management
+| 组 | 证明什么 |
+|---|---|
+| No Skill | 下界 |
+| Voyager (只增不减) | lifecycle 必要性 |
+| FIFO / LRU / Random | 简单策略不够 |
+| **Ours (完整lifecycle)** | 多维度管理优势 |
+
+### 杀手实验: Non-Stationary
+Phase 1→2→3→4(回归) 任务分布轮换，Phase 4 只有 Ours 的 Archive 能快速恢复
+
+---
+
+## ALFWorld 参考实现对比
+
+| | ReAct | Reflexion | SkillRL | 我们 |
+|---|:---:|:---:|:---:|:---:|
+| Temperature | 0 | 0 | 0.4 | 0.7 (考虑改0) |
+| Max steps | 50 | 49 | 50 | 50 |
+| Few-shot | 2/type | 3/type | 无 | 无 |
+| Admissible actions | 否 | 否 | 是 | 是 |
+| Think拦截 | 是 | 是 | XML标签 | 是 |
+| Success Rate | 71% | 97% (12 trials) | 89.9% | ? |
 
 ---
 
@@ -109,9 +98,8 @@
 - Agent Skills Survey (arXiv:2602.12430): skill生态系统综述
 
 ### Skill获取与演化
-- SkillRL (arXiv:2602.08234): 递归skill演化
+- SkillRL (arXiv:2602.08234): 递归skill演化, SFT+GRPO
 - SAGE (arXiv:2512.17102): GRPO强化skill使用策略
-- EXIF (arXiv:2506.04287): exploration-first自动skill发现
 - AutoSkill (arXiv:2603.01145): Add/Merge/Discard三操作管理
 
 ### Skill抽象与压缩
@@ -121,9 +109,15 @@
 ### Agent Memory系统
 - Memory Survey (arXiv:2512.13564): Forms/Functions/Dynamics分类
 - AgeMem (arXiv:2601.01885): RL学习记忆管理策略
-- MemEngine (arXiv:2505.02099): 模块化记忆框架
+- MemEngine (arXiv:2505.02099): 模块化记忆框架(含forgetting)
 
 ### 推理Skill相关
 - Buffer of Thoughts (2024): thought-template库
 - LEGO-Prover (NeurIPS 2023): 渐进式lemma库
 - ExpeL (2023): 经验规则积累
+
+### ALFWorld Agent
+- ReAct (ICLR 2023): think+act交替, 71% SR
+- Reflexion (NeurIPS 2023): 自反思+重试, 97% SR (12 trials)
+- AgentRefine (ICLR 2025): max_turn=30, 超越AgentGym/Agent-FLAN
+- ETO (ACL 2024): DPO-based轨迹优化

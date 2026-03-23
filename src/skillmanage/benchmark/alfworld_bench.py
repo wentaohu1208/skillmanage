@@ -327,8 +327,11 @@ class ALFWorldBenchmark(InteractiveBenchmark):
 
         if self._config_path:
             config_path = self._config_path
+        elif self._data_path:
+            # Look for base_config.yaml in data directory
+            config_path = os.path.join(self._data_path, "base_config.yaml")
         else:
-            # Auto-locate base_config.yaml from alfworld package
+            # Fallback: alfworld package configs/
             config_path = os.path.join(os.path.dirname(alfworld.__file__), "configs", "base_config.yaml")
 
         with open(config_path) as f:
