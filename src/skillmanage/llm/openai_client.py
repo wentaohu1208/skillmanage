@@ -117,10 +117,16 @@ def _parse_json_from_text(text: str) -> Dict:
     brace_start = text.find("{")
     brace_end = text.rfind("}")
     if brace_start != -1 and brace_end != -1:
+        candidate = text[brace_start : brace_end + 1]
         try:
-            return json.loads(text[brace_start : brace_end + 1])
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+        # Fix invalid JSON escapes from LaTeX (e.g., \frac \left \()
+        fixed = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', candidate)
+        try:
+            return json.loads(fixed)
         except json.JSONDecodeError:
             pass
 
-    import pdb; pdb.set_trace()  # DEBUG: inspect raw LLM output `text`
     raise ValueError(f"Could not parse JSON from LLM output: {text[:200]}...")
