@@ -36,6 +36,8 @@ class OpenAILLMClient(BaseLLMClient):
         model_name: str = "Qwen/Qwen2.5-7B-Instruct",
         temperature: float = 0.0,
         max_tokens: int = 2048,
+        top_p: float = 1.0,
+        repetition_penalty: float = None,
     ) -> None:
         try:
             from openai import OpenAI
@@ -46,6 +48,8 @@ class OpenAILLMClient(BaseLLMClient):
         self._model = model_name
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._top_p = top_p
+        self._repetition_penalty = repetition_penalty
 
     def generate(self, prompt: str, system_prompt: str = "", **kwargs: Any) -> str:
         """Generate text from a prompt."""
@@ -54,11 +58,19 @@ class OpenAILLMClient(BaseLLMClient):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        # Build extra_body for vLLM-specific params (e.g., repetition_penalty)
+        extra_body = {}
+        rep_penalty = kwargs.get("repetition_penalty", self._repetition_penalty)
+        if rep_penalty is not None:
+            extra_body["repetition_penalty"] = rep_penalty
+
         response = self._client.chat.completions.create(
             model=self._model,
             messages=messages,
             temperature=kwargs.get("temperature", self._temperature),
             max_tokens=kwargs.get("max_tokens", self._max_tokens),
+            top_p=kwargs.get("top_p", self._top_p),
+            **({"extra_body": extra_body} if extra_body else {}),
         )
         return response.choices[0].message.content or ""
 
