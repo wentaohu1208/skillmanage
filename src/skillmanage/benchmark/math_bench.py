@@ -93,7 +93,7 @@ class MathBenchmark(Benchmark):
                 if self._levels and level_num not in self._levels:
                     continue
 
-                task_type = f"{subject}_level{level_num}"
+                task_type = subject
                 ground_truth = extract_boxed_answer(example["solution"])
 
                 if not ground_truth:
@@ -194,8 +194,8 @@ class MathBenchmark(Benchmark):
         return steps
 
     def get_task_types(self) -> List[str]:
-        """Return all 35 task_type combinations (7 subjects x 5 levels)."""
-        return [f"{s}_level{l}" for s in SUBJECTS for l in range(1, 6)]
+        """Return all 7 subject-based task types."""
+        return list(SUBJECTS)
 
 
 # ---------------------------------------------------------------------------
