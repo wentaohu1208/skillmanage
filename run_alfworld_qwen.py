@@ -257,8 +257,6 @@ def main():
     parser = argparse.ArgumentParser(description="ALFWorld Qwen experiments (local vLLM)")
     parser.add_argument("--exp", type=str, default="all", help="a/b/all")
     args = parser.parse_args()
-    # Clear sys.argv to prevent ALFWorld's internal argparse/hydra from conflicting
-    sys.argv = [sys.argv[0]]
 
     random.seed(42)
     np.random.seed(42)

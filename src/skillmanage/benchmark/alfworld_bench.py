@@ -315,8 +315,8 @@ class ALFWorldBenchmark(InteractiveBenchmark):
     def _create_env(self, train_eval: str):
         """Create a new ALFWorld environment."""
         try:
+            import alfworld
             import alfworld.agents.environment
-            import alfworld.agents.modules.generic as generic
         except ImportError:
             raise ImportError(
                 "alfworld is required. Install with: pip install alfworld[full] && alfworld-download"
@@ -326,16 +326,19 @@ class ALFWorldBenchmark(InteractiveBenchmark):
             os.environ["ALFWORLD_DATA"] = self._data_path
 
         if self._config_path:
-            with open(self._config_path) as f:
-                config = yaml.safe_load(f)
+            config_path = self._config_path
         else:
-            config = generic.load_config()
+            # Auto-locate base_config.yaml from alfworld package
+            config_path = os.path.join(os.path.dirname(alfworld.__file__), "configs", "base_config.yaml")
+
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
 
         env_type = config["env"]["type"]
         env = getattr(alfworld.agents.environment, env_type)(config, train_eval=train_eval)
         env = env.init_env(batch_size=1)
 
-        logger.info("Created ALFWorld env: split=%s", train_eval)
+        logger.info("Created ALFWorld env: split=%s, config=%s", train_eval, config_path)
         return env
 
     def _count_games(self, split: str) -> int:
