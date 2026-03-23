@@ -56,6 +56,7 @@ class ExperimentTracker:
         phase: str = "train",
         repaired: bool = False,
         repair_retries: int = 0,
+        question: str = "",
         **extra: Any,
     ) -> None:
         """Log one task result."""
@@ -64,6 +65,7 @@ class ExperimentTracker:
             "phase": phase,
             "task_id": task_id,
             "task_type": task_type,
+            "question": question,
             "success": success,
             "reward": reward,
             "ground_truth": ground_truth,

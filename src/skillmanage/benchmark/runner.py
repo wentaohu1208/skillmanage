@@ -265,6 +265,7 @@ class AgentRunner:
                 num_archive=stats["archive"],
                 num_forgotten=stats["forgotten"],
                 active_tokens=stats["active_tokens"],
+                question=task.instruction,
             )
 
         return result

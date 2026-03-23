@@ -169,7 +169,7 @@ def run_no_skill(llm, bench, train_tasks, test_tasks):
                     success=r.success, reward=r.reward, ground_truth=task.ground_truth,
                     predicted=pred, used_skill_ids=[], used_skill_names=[],
                     num_active=0, num_archive=0, num_forgotten=0, active_tokens=0,
-                    phase=label.lower(),
+                    phase=label.lower(), question=task.instruction,
                 )
                 if DEBUG and not r.success:
                     _log_debug(task, r, pred)
