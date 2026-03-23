@@ -144,18 +144,24 @@ class AgentRunner:
 
         # 5. Handle Archive recall result
         if archive_hit is not None:
-            if self.tracker:
-                archived = self.skill_bank.get_archived_skill(archive_hit.original_skill_id)
-                self.tracker.log_skill_recalled(
-                    current_round, archive_hit.original_skill_id,
-                    archive_hit.original_skill_full.name,
-                    success=success,
-                    recall_count=archived.recall_count if archived else 0,
-                )
+            # Snapshot recall_count before record_recall_result increments it
+            archived = self.skill_bank.get_archived_skill(archive_hit.original_skill_id)
+            pre_recall_count = archived.recall_count if archived else 0
+
             promoted = self.archive_mgr.record_recall_result(
                 self.skill_bank, archive_hit.original_skill_id,
                 success, current_round, self.embedding_model, self.cfg.archive,
             )
+
+            # Log with post-increment count (record_recall_result increments on success)
+            if self.tracker:
+                new_count = (pre_recall_count + 1) if success else pre_recall_count
+                self.tracker.log_skill_recalled(
+                    current_round, archive_hit.original_skill_id,
+                    archive_hit.original_skill_full.name,
+                    success=success,
+                    recall_count=new_count,
+                )
             if promoted:
                 logger.info("Archive skill promoted back to Active")
                 if self.tracker:
@@ -177,8 +183,16 @@ class AgentRunner:
         self._run_acquisition(task, result, used_skills, current_round)
 
         # 8. Active management (every round)
+        # Snapshot meta before management (may be lost after archiving)
+        active_meta_snapshot = {}
+        if self.tracker:
+            for sid, askill in self.skill_bank.active.items():
+                active_meta_snapshot[sid] = {
+                    "name": askill.skill.name,
+                    "call_count": askill.meta.call_count,
+                    "success_rate": askill.meta.success_rate,
+                }
         active_before = set(self.skill_bank.active.keys())
-        archive_before = set(self.skill_bank.archive.keys())
 
         round_report = self.active_mgr.on_round_end(
             self.skill_bank, current_round, self.llm_client,
@@ -190,16 +204,15 @@ class AgentRunner:
             active_after = set(self.skill_bank.active.keys())
             newly_archived = active_before - active_after
             for sid in newly_archived:
-                archived = self.skill_bank.get_archived_skill(sid)
-                if archived:
-                    imp = round_report.importance_scores.get(sid, 0.0)
-                    self.tracker.log_skill_archived(
-                        current_round, sid, archived.original_skill_full.name,
-                        reason="importance" if imp > 0 else "quality_floor",
-                        importance=imp,
-                        call_count=archived.original_skill_full.token_cost,
-                        success_rate=0.0,
-                    )
+                meta = active_meta_snapshot.get(sid, {})
+                imp = round_report.importance_scores.get(sid, 0.0)
+                self.tracker.log_skill_archived(
+                    current_round, sid, meta.get("name", sid),
+                    reason="importance" if imp > 0 else "quality_floor",
+                    importance=imp,
+                    call_count=meta.get("call_count", 0),
+                    success_rate=meta.get("success_rate", 0.0),
+                )
 
         # 9. Tick Archive inactive
         forgotten_before = set(self.skill_bank.forgotten.keys())
@@ -398,14 +411,6 @@ class AgentRunner:
             new_emb = self.embedding_model.encode_skill(repaired)
             self.skill_bank.update_active_embedding(repaired.skill_id, new_emb)
 
-            if self.tracker:
-                self.tracker.log_skill_repaired(
-                    current_round, repaired.skill_id, repaired.name,
-                    version=active_entry.version,
-                    reason=diagnosis.reason[:100],
-                    retry_success=False,  # updated below if success
-                )
-
             # Retry with repaired skill
             used_skills = [repaired]
             skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
@@ -415,6 +420,15 @@ class AgentRunner:
             agent_output = self._run_single_turn(task, skills_prompt, warnings_section)
             success, reward = self.benchmark.check_answer(task, agent_output)
             agent_answer = self.benchmark.extract_answer(agent_output)
+
+            # Log repair AFTER retry so retry_success is accurate
+            if self.tracker:
+                self.tracker.log_skill_repaired(
+                    current_round, repaired.skill_id, repaired.name,
+                    version=active_entry.version,
+                    reason=diagnosis.reason[:100],
+                    retry_success=success,
+                )
 
             if success:
                 logger.info(
