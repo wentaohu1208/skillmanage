@@ -206,7 +206,10 @@ def run_with_skill(llm):
             if archive_hit:
                 used = [archive_hit.original_skill_full]
             skills_prompt = SkillRetriever.format_skills_for_prompt(used)
+            warnings_section = SkillRetriever.format_warnings_for_system(used, cfg.acquisition.max_warnings)
             system_prompt = test_bench.build_system_prompt(skills_prompt)
+            if warnings_section:
+                system_prompt += "\n" + warnings_section
             history, done = [], False
             for _ in range(MAX_STEPS):
                 action = llm.generate(test_bench.build_step_prompt(task, obs, history), system_prompt=system_prompt)

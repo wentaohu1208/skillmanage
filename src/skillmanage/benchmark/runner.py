@@ -192,7 +192,6 @@ class AgentRunner:
                     "call_count": askill.meta.call_count,
                     "success_rate": askill.meta.success_rate,
                 }
-        active_before = set(self.skill_bank.active.keys())
 
         round_report = self.active_mgr.on_round_end(
             self.skill_bank, current_round, self.llm_client,
@@ -216,13 +215,10 @@ class AgentRunner:
                     current_round, s_id, s_name, old_tok, new_tok,
                 )
 
-            # Track skills that truly moved Active→Archive (exclude merge-consumed)
-            active_after = set(self.skill_bank.active.keys())
-            newly_archived = active_before - active_after - merged_consumed
-            for sid in newly_archived:
+            # Track archived skills (source of truth: archive_reasons from manager)
+            for sid, reason in round_report.archive_reasons.items():
                 meta = active_meta_snapshot.get(sid, {})
                 imp = round_report.importance_scores.get(sid, 0.0)
-                reason = round_report.archive_reasons.get(sid, "importance")
                 self.tracker.log_skill_archived(
                     current_round, sid, meta.get("name", sid),
                     reason=reason,
