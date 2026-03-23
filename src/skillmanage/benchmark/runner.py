@@ -206,12 +206,25 @@ class AgentRunner:
             for sid in newly_archived:
                 meta = active_meta_snapshot.get(sid, {})
                 imp = round_report.importance_scores.get(sid, 0.0)
+                reason = round_report.archive_reasons.get(sid, "importance")
                 self.tracker.log_skill_archived(
                     current_round, sid, meta.get("name", sid),
-                    reason="importance" if imp > 0 else "quality_floor",
+                    reason=reason,
                     importance=imp,
                     call_count=meta.get("call_count", 0),
                     success_rate=meta.get("success_rate", 0.0),
+                )
+
+            # Track merge events
+            for a_id, a_name, b_id, b_name, m_id, m_name in round_report.merge_details:
+                self.tracker.log_skill_merged(
+                    current_round, a_id, a_name, b_id, b_name, m_id, m_name,
+                )
+
+            # Track distill events
+            for s_id, s_name, old_tok, new_tok in round_report.distill_details:
+                self.tracker.log_skill_distilled(
+                    current_round, s_id, s_name, old_tok, new_tok,
                 )
 
         # 9. Tick Archive inactive

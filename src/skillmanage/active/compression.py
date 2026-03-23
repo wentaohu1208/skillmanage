@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -28,6 +28,10 @@ class CompressionReport:
     distills: int = 0
     tokens_saved: int = 0
     still_over_budget: bool = False
+    # (skill_a_id, skill_a_name, skill_b_id, skill_b_name, merged_id, merged_name)
+    merge_details: List[Tuple[str, str, str, str, str, str]] = field(default_factory=list)
+    # (skill_id, skill_name, old_tokens, new_tokens)
+    distill_details: List[Tuple[str, str, int, int]] = field(default_factory=list)
 
 
 class Compressor:
@@ -75,11 +79,18 @@ class Compressor:
         for id_a, id_b, sim in merge_candidates:
             if not skill_bank.is_over_budget(retrieval_cfg):
                 break
+            # Snapshot names before merge removes originals
+            name_a = skill_bank.active[id_a].skill.name if id_a in skill_bank.active else id_a
+            name_b = skill_bank.active[id_b].skill.name if id_b in skill_bank.active else id_b
             merged = self._execute_merge(
                 id_a, id_b, skill_bank, embedding_model, llm_client
             )
             if merged:
                 report.merges += 1
+                report.merge_details.append((
+                    id_a, name_a, id_b, name_b,
+                    merged.skill.skill_id, merged.skill.name,
+                ))
 
         # Step 2: Distill
         if skill_bank.is_over_budget(retrieval_cfg):
@@ -87,12 +98,17 @@ class Compressor:
             for active_skill in distill_candidates:
                 if not skill_bank.is_over_budget(retrieval_cfg):
                     break
+                old_tokens = active_skill.skill.token_cost
                 saved = self._execute_distill(
                     active_skill, skill_bank, llm_client
                 )
                 if saved > 0:
                     report.distills += 1
                     report.tokens_saved += saved
+                    report.distill_details.append((
+                        active_skill.skill.skill_id, active_skill.skill.name,
+                        old_tokens, active_skill.skill.token_cost,
+                    ))
 
         report.still_over_budget = skill_bank.is_over_budget(retrieval_cfg)
         final_tokens = skill_bank.get_total_active_tokens()

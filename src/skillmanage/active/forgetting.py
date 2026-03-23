@@ -28,7 +28,7 @@ class ForgettingManager:
         skill_bank: SkillBank,
         importance_scores: Dict[str, float],
         cfg: ActiveConfig,
-    ) -> List[str]:
+    ) -> Dict[str, str]:
         """Find skills that should be naturally degraded.
 
         Updates low_importance_streak and returns IDs of skills
@@ -40,9 +40,9 @@ class ForgettingManager:
             cfg: Active configuration.
 
         Returns:
-            List of skill IDs to degrade.
+            Dict mapping skill_id to degradation reason ('quality_floor', 'importance', 'forced').
         """
-        to_degrade = []
+        to_degrade: Dict[str, str] = {}
 
         for skill_id, active_skill in list(skill_bank.active.items()):
             score = importance_scores.get(skill_id, 0.0)
@@ -50,7 +50,7 @@ class ForgettingManager:
             # Quality floor: force degrade skills with low success rate
             if (active_skill.meta.call_count >= cfg.quality_floor_min_calls
                     and active_skill.meta.success_rate < cfg.quality_floor):
-                to_degrade.append(skill_id)
+                to_degrade[skill_id] = "quality_floor"
                 logger.info(
                     "Quality floor: '%s' (sr=%.2f, calls=%d)",
                     active_skill.skill.name,
@@ -62,7 +62,7 @@ class ForgettingManager:
             if score < cfg.archive_threshold:
                 active_skill.meta.low_importance_streak += 1
                 if active_skill.meta.low_importance_streak >= cfg.consecutive_rounds:
-                    to_degrade.append(skill_id)
+                    to_degrade[skill_id] = "importance"
                     logger.info(
                         "Natural forgetting: '%s' (score=%.3f, streak=%d)",
                         active_skill.skill.name, score,

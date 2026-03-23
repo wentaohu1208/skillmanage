@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple
 
 from ..config import ActiveConfig, RetrievalConfig
 from ..core.embedding import EmbeddingModel
@@ -25,6 +26,12 @@ class RoundReport:
     merges: int = 0
     distills: int = 0
     tokens_saved: int = 0
+    # Maps skill_id -> reason ('quality_floor', 'importance', 'forced')
+    archive_reasons: Dict[str, str] = field(default_factory=dict)
+    # Merge details: [(skill_a_id, skill_a_name, skill_b_id, skill_b_name, merged_id, merged_name)]
+    merge_details: List[Tuple[str, str, str, str, str, str]] = field(default_factory=list)
+    # Distill details: [(skill_id, skill_name, old_tokens, new_tokens)]
+    distill_details: List[Tuple[str, str, int, int]] = field(default_factory=list)
 
 
 class ActiveManager:
@@ -73,12 +80,13 @@ class ActiveManager:
         report.importance_scores = scores
 
         # 2. Check natural forgetting
-        to_degrade = self._forgetting.check_natural_forgetting(
+        degrade_reasons = self._forgetting.check_natural_forgetting(
             skill_bank, scores, active_cfg
         )
-        if to_degrade:
+        if degrade_reasons:
+            report.archive_reasons.update(degrade_reasons)
             archived = self._forgetting.execute_degradation(
-                skill_bank, to_degrade, llm_client, embedding_model, current_round
+                skill_bank, list(degrade_reasons.keys()), llm_client, embedding_model, current_round
             )
             report.skills_archived = len(archived)
 
@@ -90,6 +98,8 @@ class ActiveManager:
             report.merges = comp_report.merges
             report.distills = comp_report.distills
             report.tokens_saved = comp_report.tokens_saved
+            report.merge_details = comp_report.merge_details
+            report.distill_details = comp_report.distill_details
 
             # If still over budget after merge+distill, force forget
             if comp_report.still_over_budget:
@@ -105,6 +115,8 @@ class ActiveManager:
                 n_to_remove = max(1, overage // avg_cost + 1)
 
                 force_ids = self._forgetting.force_forget(skill_bank, scores, n_to_remove)
+                for sid in force_ids:
+                    report.archive_reasons[sid] = "forced"
                 archived = self._forgetting.execute_degradation(
                     skill_bank, force_ids, llm_client, embedding_model, current_round
                 )
