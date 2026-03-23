@@ -122,4 +122,5 @@ def _parse_json_from_text(text: str) -> Dict:
         except json.JSONDecodeError:
             pass
 
+    import pdb; pdb.set_trace()  # DEBUG: inspect raw LLM output `text`
     raise ValueError(f"Could not parse JSON from LLM output: {text[:200]}...")
