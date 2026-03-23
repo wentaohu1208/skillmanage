@@ -121,6 +121,7 @@ def run_no_skill(llm):
                         "OK" if success else "X", bench.current_task_type)
         except Exception as e:
             logger.error("[%s] Test %d FAILED: %s", MODEL_NAME, i+1, e)
+            results.append({"task_id": task.task_id, "task_type": "unknown", "success": False, "steps": 0})
 
     correct = sum(1 for r in results if r["success"])
     per_type = compute_per_type_sr(results)
@@ -200,6 +201,7 @@ def run_with_skill(llm):
                         "OK" if success else "X", test_bench.current_task_type, len(used))
         except Exception as e:
             logger.error("[%s] Test %d FAILED: %s", MODEL_NAME, i+1, e)
+            results.append({"task_id": task.task_id, "task_type": "unknown", "success": False, "skills_used": 0})
 
     correct = sum(1 for r in results if r["success"])
     per_type = compute_per_type_sr(results)

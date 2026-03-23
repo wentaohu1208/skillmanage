@@ -133,8 +133,12 @@ class MathBenchmark(Benchmark):
 
     @property
     def system_prompt(self) -> str:
-        """System prompt for MATH."""
-        return MATH_SYSTEM_PROMPT
+        """System prompt for MATH (without warnings — use build_system_prompt for full version)."""
+        return MATH_SYSTEM_PROMPT.format(warnings_section="")
+
+    def build_system_prompt_with_warnings(self, warnings_section: str) -> str:
+        """Build system prompt with warnings section included."""
+        return MATH_SYSTEM_PROMPT.format(warnings_section=warnings_section)
 
     def check_answer(
         self, task: TaskInstance, agent_output: str
@@ -160,6 +164,13 @@ class MathBenchmark(Benchmark):
 
         correct = is_equiv(predicted, task.ground_truth, llm_client=self._llm_client)
         return correct, 1.0 if correct else 0.0
+
+    def extract_answer(self, agent_output: str) -> str:
+        """Extract boxed answer from MATH CoT output."""
+        answer = extract_boxed_answer(agent_output)
+        if not answer:
+            answer = _fallback_extract_answer(agent_output)
+        return answer
 
     def extract_trajectory(self, agent_output: str) -> List[str]:
         """Extract reasoning steps from CoT output.

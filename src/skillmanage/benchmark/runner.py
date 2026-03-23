@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from ..acquisition.alignment import PatternBufferManager
 from ..acquisition.collector import CollectionDecider
-from ..acquisition.failure_learning import FailureLearner, WarningAttachment
+from ..acquisition.failure_learning import FailureLearner, SkillRepairResult, WarningAttachment
 from ..acquisition.formalization import Formalizer
 from ..acquisition.segmentation import Segmenter
 from ..active.manager import ActiveManager
@@ -101,13 +101,24 @@ class AgentRunner:
             if archive_hit is not None:
                 used_skills = [archive_hit.original_skill_full]
             skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
-            agent_output = self._run_single_turn(task, skills_prompt)
+            warnings_section = SkillRetriever.format_warnings_for_system(
+                used_skills, self.cfg.acquisition.max_warnings
+            )
+            agent_output = self._run_single_turn(task, skills_prompt, warnings_section)
         else:
             # Multi-step: reset env first to get instruction, then retrieve
             agent_output, used_skills, archive_hit = self._run_multi_step(task)
 
         # 3. Check answer
         success, reward = self.benchmark.check_answer(task, agent_output)
+
+        # 3.5 Skill repair loop (training only, single-turn with skills)
+        if (not success
+                and used_skills
+                and self.benchmark.get_interaction_mode() == InteractionMode.SINGLE_TURN):
+            success, reward, agent_output, used_skills = self._try_repair_and_retry(
+                task, agent_output, used_skills, current_round,
+            )
 
         # 4. Extract trajectory
         trajectory = self.benchmark.extract_trajectory(agent_output)
@@ -251,13 +262,104 @@ class AgentRunner:
         return sr
 
     # ------------------------------------------------------------------
+    # Skill repair + retry
+    # ------------------------------------------------------------------
+
+    def _try_repair_and_retry(
+        self,
+        task: TaskInstance,
+        agent_output: str,
+        used_skills: List[Skill],
+        current_round: int,
+    ) -> tuple:
+        """Diagnose skill failure and repair+retry if skill is faulty.
+
+        Only runs during training, for single-turn tasks with skills.
+
+        Returns:
+            Tuple of (success, reward, agent_output, used_skills) after repair attempts.
+        """
+        max_retries = self.cfg.acquisition.max_skill_retries
+        agent_answer = self.benchmark.extract_answer(agent_output)
+
+        for retry in range(max_retries):
+            # Find the first Active skill that was used
+            active_skill_to_repair = None
+            for s in used_skills:
+                if s.skill_id in self.skill_bank.active:
+                    active_skill_to_repair = s
+                    break
+
+            if active_skill_to_repair is None:
+                break
+
+            # Diagnose: model error or skill fault?
+            trajectory = self.benchmark.extract_trajectory(agent_output)
+            diagnosis = self.failure_learner.diagnose_skill_failure(
+                task.instruction, trajectory,
+                active_skill_to_repair,
+                task.ground_truth, agent_answer,
+                self.llm_client,
+            )
+
+            if diagnosis is None:
+                # Model error, not skill fault — don't repair
+                logger.debug("Retry %d: model error, not skill fault. Stopping.", retry + 1)
+                break
+
+            # Skill is faulty — repair it
+            logger.info(
+                "Retry %d/%d: repairing skill '%s' — %s",
+                retry + 1, max_retries,
+                active_skill_to_repair.name, diagnosis.reason[:60],
+            )
+
+            repaired = self.failure_learner.repair_skill(
+                active_skill_to_repair,
+                task.instruction, diagnosis.reason, task.ground_truth,
+                self.llm_client,
+            )
+
+            # Update skill in Active
+            active_entry = self.skill_bank.get_active_skill(repaired.skill_id)
+            if active_entry is None:
+                logger.warning("Skill '%s' no longer in Active, aborting repair.", repaired.skill_id)
+                break
+            active_entry.skill = repaired
+            active_entry.version += 1
+            new_emb = self.embedding_model.encode_skill(repaired)
+            self.skill_bank.update_active_embedding(repaired.skill_id, new_emb)
+
+            # Retry with repaired skill
+            used_skills = [repaired]
+            skills_prompt = SkillRetriever.format_skills_for_prompt(used_skills)
+            agent_output = self._run_single_turn(task, skills_prompt)
+            success, reward = self.benchmark.check_answer(task, agent_output)
+            agent_answer = self.benchmark.extract_answer(agent_output)
+
+            if success:
+                logger.info(
+                    "Retry %d: skill '%s' repaired successfully (v%d)",
+                    retry + 1, repaired.name,
+                    active_entry.version if active_entry else 0,
+                )
+                return success, reward, agent_output, used_skills
+
+        # All retries exhausted or model error — return last known result
+        return False, 0.0, agent_output, used_skills
+
+    # ------------------------------------------------------------------
     # Execution methods
     # ------------------------------------------------------------------
 
-    def _run_single_turn(self, task: TaskInstance, skills_prompt: str) -> str:
+    def _run_single_turn(self, task: TaskInstance, skills_prompt: str, warnings_section: str = "") -> str:
         """Execute a single-turn task (MATH, BBH)."""
         prompt = self.benchmark.build_prompt(task, skills_prompt)
-        system_prompt = getattr(self.benchmark, "system_prompt", "")
+        # Build system prompt with warnings if benchmark supports it
+        if hasattr(self.benchmark, "build_system_prompt_with_warnings") and warnings_section:
+            system_prompt = self.benchmark.build_system_prompt_with_warnings(warnings_section)
+        else:
+            system_prompt = getattr(self.benchmark, "system_prompt", "")
         return self.llm_client.generate(prompt, system_prompt=system_prompt)
 
     def _run_multi_step(self, task: TaskInstance) -> tuple:
@@ -370,6 +472,31 @@ class AgentRunner:
                     self.embedding_model, self.cfg.active, self.cfg.retrieval,
                 )
 
+    def _consolidate_warnings(self, active_skill, max_warnings: int) -> None:
+        """Consolidate excessive warnings into top-N via LLM."""
+        warnings = active_skill.skill.warnings
+        prompt = (
+            f"The following skill has {len(warnings)} warnings. "
+            f"Consolidate them into the {max_warnings} most important, distinct ones.\n\n"
+            f"Skill: {active_skill.skill.name}\n"
+            f"Warnings:\n" + "\n".join(f"- {w}" for w in warnings) + "\n\n"
+            f"Return exactly {max_warnings} consolidated warnings as a JSON list of strings."
+        )
+        try:
+            result = self.llm_client.generate_json(prompt)
+            if isinstance(result, list):
+                active_skill.skill.warnings = result[:max_warnings]
+            elif isinstance(result, dict) and "warnings" in result:
+                active_skill.skill.warnings = result["warnings"][:max_warnings]
+            logger.info(
+                "Consolidated warnings for '%s': %d -> %d",
+                active_skill.skill.name, len(warnings), len(active_skill.skill.warnings),
+            )
+        except (ValueError, KeyError) as e:
+            # Fallback: just keep the most recent N
+            active_skill.skill.warnings = warnings[-max_warnings:]
+            logger.warning("Warning consolidation failed: %s. Keeping last %d.", e, max_warnings)
+
     def _handle_failure_acquisition(
         self, task: TaskInstance, result: TaskResult, current_round: int
     ) -> None:
@@ -394,8 +521,15 @@ class AgentRunner:
                     "Attached warning to '%s': %s",
                     active_skill.skill.name, analysis.warning_text[:50],
                 )
+                # Consolidate if too many warnings
+                max_w = self.cfg.acquisition.max_warnings
+                if len(active_skill.skill.warnings) > max_w:
+                    self._consolidate_warnings(active_skill, max_w)
         elif isinstance(analysis, Skill):
-            # Add new skill from failure analysis
-            emb = self.embedding_model.encode_skill(analysis)
-            self.skill_bank.add_to_active(analysis, emb)
-            logger.info("Added failure-derived skill: '%s'", analysis.name)
+            # Only create independent failure skill if configured
+            if self.cfg.acquisition.create_failure_skill:
+                emb = self.embedding_model.encode_skill(analysis)
+                self.skill_bank.add_to_active(analysis, emb)
+                logger.info("Added failure-derived skill: '%s'", analysis.name)
+            else:
+                logger.debug("Skipping failure-derived skill (create_failure_skill=False)")

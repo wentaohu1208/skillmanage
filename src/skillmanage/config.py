@@ -25,6 +25,15 @@ class AcquisitionConfig:
     cross_category_ratio: float = 0.8
     """If pattern appears in >80% of categories, consider it too generic."""
 
+    max_skill_retries: int = 3
+    """Maximum times to repair and retry a skill on the same task before skipping."""
+
+    max_warnings: int = 5
+    """Maximum warnings per skill. Excess triggers LLM consolidation."""
+
+    create_failure_skill: bool = False
+    """Whether to create independent avoid_xxx skills from failures. If False, only attach warnings."""
+
 
 @dataclass(frozen=True)
 class RetrievalConfig:
@@ -33,7 +42,7 @@ class RetrievalConfig:
     top_k: int = 3
     """K: number of skills to retrieve per task."""
 
-    similarity_threshold: float = 0.4
+    similarity_threshold: float = 0.5
     """Minimum cosine similarity for skill retrieval."""
 
     token_budget: int = 2000
@@ -49,6 +58,12 @@ class ActiveConfig:
 
     archive_threshold: float = 0.2
     """theta_archive: importance score below which a skill may be archived."""
+
+    quality_floor: float = 0.35
+    """Minimum success rate. Skills below this with enough calls are force-degraded."""
+
+    quality_floor_min_calls: int = 30
+    """Minimum calls before quality_floor check applies."""
 
     consecutive_rounds: int = 5
     """T1: consecutive rounds below threshold before archiving."""

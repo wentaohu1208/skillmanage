@@ -100,18 +100,14 @@ class Skill:
         )
 
     def to_prompt_str(self) -> str:
-        """Format skill for inclusion in agent prompt."""
+        """Format skill steps for user prompt (no warnings — those go in system prompt)."""
         lines = [f"[Skill: {self.name}]"]
         if self.description:
-            lines.append(f"Description: {self.description}")
+            lines.append(f"When to apply: {self.description}")
         if self.steps:
             lines.append("Steps:")
             for step in self.steps:
                 lines.append(f"  {step}")
-        if self.warnings:
-            lines.append("Warnings:")
-            for w in self.warnings:
-                lines.append(f"  - {w}")
         return "\n".join(lines)
 
 

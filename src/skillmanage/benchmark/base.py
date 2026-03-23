@@ -156,6 +156,20 @@ class Benchmark(ABC):
             Tuple of (success, reward). Reward is 0-1.
         """
 
+    def extract_answer(self, agent_output: str) -> str:
+        """Extract the final answer from agent output.
+
+        Used by skill repair to compare with ground truth.
+        Default: return full output. Override for benchmark-specific extraction.
+
+        Args:
+            agent_output: Raw agent output.
+
+        Returns:
+            Extracted answer string.
+        """
+        return agent_output
+
     @abstractmethod
     def extract_trajectory(self, agent_output: str) -> List[str]:
         """Extract reasoning/action steps from agent output.

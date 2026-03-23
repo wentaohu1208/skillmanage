@@ -152,6 +152,7 @@ def run_no_skill(model_name: str, llm_client, output_dir: str) -> dict:
 
         except Exception as e:
             logger.error("[%s no-skill] Test %d FAILED: %s", model_name, i+1, e)
+            results.append({"task_id": task.task_id, "task_type": "unknown", "success": False, "steps": 0})
 
     # Summary
     total = len(results)
@@ -292,6 +293,7 @@ def run_with_skill(model_name: str, llm_client, embedding_model, output_dir: str
 
         except Exception as e:
             logger.error("[%s skill] Test %d FAILED: %s", model_name, i+1, e)
+            test_results.append({"task_id": task.task_id, "task_type": "unknown", "success": False, "skills_used": 0})
 
     # Summary
     train_correct = sum(1 for r in train_results if r["success"])

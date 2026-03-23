@@ -47,6 +47,18 @@ class ForgettingManager:
         for skill_id, active_skill in list(skill_bank.active.items()):
             score = importance_scores.get(skill_id, 0.0)
 
+            # Quality floor: force degrade skills with low success rate
+            if (active_skill.meta.call_count >= cfg.quality_floor_min_calls
+                    and active_skill.meta.success_rate < cfg.quality_floor):
+                to_degrade.append(skill_id)
+                logger.info(
+                    "Quality floor: '%s' (sr=%.2f, calls=%d)",
+                    active_skill.skill.name,
+                    active_skill.meta.success_rate,
+                    active_skill.meta.call_count,
+                )
+                continue
+
             if score < cfg.archive_threshold:
                 active_skill.meta.low_importance_streak += 1
                 if active_skill.meta.low_importance_streak >= cfg.consecutive_rounds:

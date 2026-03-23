@@ -147,6 +147,59 @@ Respond in JSON:
 }}"""
 
 # ---------------------------------------------------------------------------
+# Acquisition: Skill failure diagnosis
+# ---------------------------------------------------------------------------
+
+SKILL_FAILURE_DIAGNOSIS_PROMPT = """An agent used a skill but still failed the task.
+
+Task: {task}
+Skill used: "{skill_name}"
+Skill steps:
+{skill_steps}
+
+Agent's execution:
+{trajectory}
+
+Ground truth answer: {ground_truth}
+Agent's answer: {agent_answer}
+
+Diagnose: Is the failure because:
+A) The skill steps are correct but the model made an execution error (calculation mistake, misread, etc.)
+B) The skill steps themselves are wrong, incomplete, or misleading
+
+Respond in JSON:
+{{
+  "diagnosis": "A" or "B",
+  "reason": "brief explanation"
+}}"""
+
+# ---------------------------------------------------------------------------
+# Acquisition: Skill repair
+# ---------------------------------------------------------------------------
+
+SKILL_REPAIR_PROMPT = """The following skill caused a task failure. Please repair it.
+
+Skill name: {skill_name}
+Current steps:
+{skill_steps}
+
+Current warnings:
+{skill_warnings}
+
+Failed task: {task}
+What went wrong: {failure_reason}
+Ground truth answer: {ground_truth}
+
+Rewrite the skill steps to fix the issue. Keep what works, fix what's broken.
+Do NOT make the steps overly long — keep them concise and actionable.
+
+Respond in JSON:
+{{
+  "steps": ["1. ...", "2. ...", "3. ..."],
+  "warnings": ["..."]
+}}"""
+
+# ---------------------------------------------------------------------------
 # Active: Merge
 # ---------------------------------------------------------------------------
 

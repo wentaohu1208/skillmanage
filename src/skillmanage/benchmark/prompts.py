@@ -4,7 +4,8 @@
 # MATH
 # ---------------------------------------------------------------------------
 
-MATH_SYSTEM_PROMPT = "You are a math problem solver. Show your reasoning step by step."
+MATH_SYSTEM_PROMPT = """You are a math problem solver. Show your reasoning step by step.
+{warnings_section}"""
 
 MATH_COT_PROMPT = """Solve the following math problem step by step.
 {skills_prompt}

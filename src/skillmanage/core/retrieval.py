@@ -128,13 +128,13 @@ class SkillRetriever:
 
     @staticmethod
     def format_skills_for_prompt(skills: List[Skill]) -> str:
-        """Format retrieved skills for inclusion in agent prompt.
+        """Format skill steps for user prompt (no warnings).
 
         Args:
             skills: List of skills to format.
 
         Returns:
-            Formatted string for prompt insertion.
+            Formatted string with skill steps only.
         """
         if not skills:
             return ""
@@ -144,3 +144,29 @@ class SkillRetriever:
             parts.append(skill.to_prompt_str())
             parts.append("")
         return "\n".join(parts)
+
+    @staticmethod
+    def format_warnings_for_system(skills: List[Skill], max_warnings: int = 5) -> str:
+        """Collect and deduplicate warnings from skills for system prompt.
+
+        Args:
+            skills: List of skills.
+            max_warnings: Maximum warnings to include.
+
+        Returns:
+            Formatted warnings section, or empty string.
+        """
+        all_warnings = []
+        for skill in skills:
+            for w in skill.warnings:
+                if w not in all_warnings:
+                    all_warnings.append(w)
+
+        if not all_warnings:
+            return ""
+
+        selected = all_warnings[:max_warnings]
+        lines = ["\n## Common Mistakes to Avoid:"]
+        for w in selected:
+            lines.append(f"- {w}")
+        return "\n".join(lines)
